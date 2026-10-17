@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="128" viewBox="0 0 900 128" role="img" aria-label="Spark-Decide in numeri">
+<title>Spark-Decide in numeri</title>
+<style>
+  .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+  .t1{fill:#eaf6ef} .t2{fill:#a3b8ad} .t3{fill:#6f8479} .g{fill:#2ee88a}
+  .b{font-weight:700} .sb{font-weight:600}
+  .cap{letter-spacing:.12em;font-size:11px;font-weight:700}
+</style>
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0d1411"/><stop offset="1" stop-color="#0a0f0d"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#16211c"/>
+  </pattern>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<rect x="0.5" y="0.5" width="899" height="127" rx="18" fill="url(#bgGrad)" stroke="#1f2d26"/>
+<rect x="0.5" y="0.5" width="899" height="127" rx="18" fill="url(#dots)" opacity=".7"/>
+
+<g transform="translate(20.0,20)">
+  <rect width="162.4" height="88" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="14" y="0" width="28" height="3" rx="1.5" fill="#2ee88a"/>
+  <text x="14" y="40" class="s b t1" font-size="28">1</text>
+  <text x="14" y="60" class="s sb t1" font-size="12.5">forward pass</text>
+  <text x="14" y="77" class="s t3" font-size="11.5">per tutte le domande</text>
+</g>
+<g transform="translate(194.4,20)">
+  <rect width="162.4" height="88" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="14" y="0" width="28" height="3" rx="1.5" fill="#2ee88a"/>
+  <text x="14" y="40" class="s b t1" font-size="28">3</text>
+  <text x="14" y="60" class="s sb t1" font-size="12.5">tipi di domanda</text>
+  <text x="14" y="77" class="s t3" font-size="11.5">choice · boolean · score</text>
+</g>
+<g transform="translate(368.8,20)">
+  <rect width="162.4" height="88" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="14" y="0" width="28" height="3" rx="1.5" fill="#2ee88a"/>
+  <text x="14" y="40" class="s b t1" font-size="28">4,1 B</text>
+  <text x="14" y="60" class="s sb t1" font-size="12.5">parametri</text>
+  <text x="14" y="77" class="s t3" font-size="11.5">backbone Spark-X2.5-4B</text>
+</g>
+<g transform="translate(543.2,20)">
+  <rect width="162.4" height="88" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="14" y="0" width="28" height="3" rx="1.5" fill="#2ee88a"/>
+  <text x="14" y="40" class="s b t1" font-size="28">2,62 GB</text>
+  <text x="14" y="60" class="s sb t1" font-size="12.5">VRAM in 4-bit</text>
+  <text x="14" y="77" class="s t3" font-size="11.5">NF4 · gira su GTX 1650</text>
+</g>
+<g transform="translate(717.6,20)">
+  <rect width="162.4" height="88" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="14" y="0" width="28" height="3" rx="1.5" fill="#2ee88a"/>
+  <text x="14" y="40" class="s b t1" font-size="28">×3,4</text>
+  <text x="14" y="60" class="s sb t1" font-size="12.5">cibo con Guard-Rail</text>
+  <text x="14" y="77" class="s t3" font-size="11.5">Snake, solo sensori</text>
+</g>
+</svg>

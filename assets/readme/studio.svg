@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="232" viewBox="0 0 900 232" role="img" aria-label="Le quattro aree di Spark-Decide Studio">
+<title>Le quattro aree di Spark-Decide Studio</title>
+<style>
+  .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+  .t1{fill:#eaf6ef} .t2{fill:#a3b8ad} .t3{fill:#6f8479} .g{fill:#2ee88a}
+  .b{font-weight:700} .sb{font-weight:600}
+  .cap{letter-spacing:.12em;font-size:11px;font-weight:700}
+</style>
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0d1411"/><stop offset="1" stop-color="#0a0f0d"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#16211c"/>
+  </pattern>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<rect x="0.5" y="0.5" width="899" height="231" rx="18" fill="url(#bgGrad)" stroke="#1f2d26"/>
+<rect x="0.5" y="0.5" width="899" height="231" rx="18" fill="url(#dots)" opacity=".7"/>
+<text x="20" y="34" class="s b t1" font-size="17">Spark-Decide Studio <tspan class="m t3" font-size="13" font-weight="400">http://127.0.0.1:7860</tspan></text>
+<g transform="translate(20.0,52)">
+  <rect width="206.0" height="160" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="16" y="18" width="10" height="10" rx="3" fill="#2ee88a"/>
+  <text x="34" y="28" class="s b t1" font-size="14.5">Decision Studio</text><text x="16" y="60" class="s t2" font-size="12">Builder visuale di domande</text><text x="16" y="84" class="s t2" font-size="12">o payload JSON, sincronizzati</text><text x="16" y="108" class="s t2" font-size="12">risposta · JSON · cURL · Python</text><text x="16" y="132" class="s t2" font-size="12">entropia e margine</text></g>
+<g transform="translate(238.0,52)">
+  <rect width="206.0" height="160" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="16" y="18" width="10" height="10" rx="3" fill="#3987e5"/>
+  <text x="34" y="28" class="s b t1" font-size="14.5">Snake Live Arena</text><text x="16" y="60" class="s t2" font-size="12">il modello gioca dal vivo</text><text x="16" y="84" class="s t2" font-size="12">barre di probabilità per mossa</text><text x="16" y="108" class="s t2" font-size="12">danger, risk e Guard-Rail</text><text x="16" y="132" class="s t2" font-size="12">3 modalità di STATE</text></g>
+<g transform="translate(456.0,52)">
+  <rect width="206.0" height="160" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="16" y="18" width="10" height="10" rx="3" fill="#c98500"/>
+  <text x="34" y="28" class="s b t1" font-size="14.5">Benchmark Suite</text><text x="16" y="60" class="s t2" font-size="12">Spark-Decide vs baseline</text><text x="16" y="84" class="s t2" font-size="12">Greedy e Casuale-sicuro</text><text x="16" y="108" class="s t2" font-size="12">Guard-Rail OFF / ON</text><text x="16" y="132" class="s t2" font-size="12">export CSV e JSON</text></g>
+<g transform="translate(674.0,52)">
+  <rect width="206.0" height="160" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+  <rect x="16" y="18" width="10" height="10" rx="3" fill="#199e70"/>
+  <text x="34" y="28" class="s b t1" font-size="14.5">REST API</text><text x="16" y="60" class="m t2" font-size="12">POST /api/decide</text><text x="16" y="84" class="m t2" font-size="12">GET /api/info</text><text x="16" y="108" class="m t2" font-size="12">/api/snake/step · /reset</text><text x="16" y="132" class="m t2" font-size="12">/api/benchmark/start</text></g>
+</svg>
