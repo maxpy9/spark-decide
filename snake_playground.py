@@ -292,6 +292,15 @@ if os.path.exists("benchmark_snake.json"):
 
 app = FastAPI(title="Spark-Decide Studio & Snake Playground")
 
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/api/info")
 def api_info():
@@ -989,7 +998,11 @@ STUDIO_HTML = r"""<!DOCTYPE html>
         <span class="brand-name">Spark-Decide</span>
         <span class="brand-mode" id="header-mode-label">playground</span>
       </div>
-      <span class="hw-pill" id="hw-pill-badge">Spark-Decide-4B · q4_nf4 · gpu</span>
+      <div id="hw-pill-badge" class="hw-pill" onclick="toggleServerBar()" style="cursor:pointer;" title="Clicca per configurare l'URL del server">
+        <span id="conn-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444;margin-right:4px;"></span>
+        <span id="conn-text">Verifica server...</span>
+      </div>
+      <button class="btn btn-sm" onclick="toggleServerBar()" style="font-size:11.5px;padding:3px 8px;" title="Configura l'URL del backend">⚙️ Server URL</button>
     </div>
 
     <div class="topbar-right">
@@ -1013,6 +1026,15 @@ STUDIO_HTML = r"""<!DOCTYPE html>
       <button class="btn btn-primary" id="btn-top-run" onclick="executePlayground()">Esegui</button>
     </div>
   </header>
+
+  <!-- COLLAPSIBLE SERVER CONFIG BAR -->
+  <div id="server-config-bar" style="display:none;background:#242424;border-bottom:1px solid #383838;padding:10px 22px;color:#eee;font-size:12.5px;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span><strong>URL Server / Tunnel Cloudflare:</strong></span>
+    <input type="text" id="custom-server-url" placeholder="es. http://127.0.0.1:7860 oppure https://xxx.trycloudflare.com" style="flex:1;min-width:240px;max-width:480px;padding:6px 10px;border-radius:6px;border:1px solid #555;background:#151515;color:#3ecf8e;font-family:var(--font-mono);font-size:12px;"/>
+    <button class="btn btn-sm btn-primary" onclick="saveAndTestServerUrl()">Test & Salva</button>
+    <button class="btn btn-sm" onclick="toggleServerBar()">Chiudi</button>
+    <span id="server-test-feedback" style="font-size:12px;font-weight:600;"></span>
+  </div>
 
   <main class="page-wrap">
 
@@ -1608,89 +1630,68 @@ function loadPreset(key) {
 }
 
 // ============================================================================
-// ESECUZIONE PLAYGROUND (Server GPU + Fallback autonomo su Telefono)
+// GESTIONE CONNESSIONE AL VERO SERVER SPARK-DECIDE (Nessuna simulazione finta!)
 // ============================================================================
-function localEdgeFallbackDecide(payload) {
-  const stateStr = (typeof payload.state === 'string' ? payload.state : JSON.stringify(payload.state)).toLowerCase();
-  const stopWords = new Set(['does','have','this','candidate','with','from','that','what','which','sono','della','dello','delle','degli','nella','حول','how','much','many','into','their','esperienza','livello']);
-  const tokenize = (txt) => String(txt || '').toLowerCase().split(/[^\p{L}\p{N}_+#.-]+/u).filter(w => w.length >= 2 && !stopWords.has(w));
-  const res = {};
-  for (const [qName, qDef] of Object.entries(payload.questions || {})) {
-    const t = (qDef.type || 'choice').toLowerCase();
-    const instr = (qDef.instructions || qName).toLowerCase();
-    const crit = qDef.criteria || {};
-    if (t === 'noul' || t === 'boolean' || t === 'bool') {
-      const trueTokens = tokenize(instr + ' ' + (crit.true || ''));
-      const falseTokens = tokenize(crit.false || '');
-      let trueHits = 0, falseHits = 0;
-      trueTokens.forEach(w => {
-        if (stateStr.includes('no ' + w) || stateStr.includes('non ' + w) || stateStr.includes('senza ' + w) || stateStr.includes('not ' + w)) falseHits += 2;
-        else if (stateStr.includes(w)) trueHits += 1;
-      });
-      falseTokens.forEach(w => { if (stateStr.includes(w)) falseHits += 1.5; });
-      const pTrue = (trueHits > falseHits) ? 0.968 : 0.048;
-      res[qName] = {
-        answer: pTrue >= 0.5,
-        confidence: Math.max(pTrue, 1 - pTrue),
-        probabilities: { "true": Number(pTrue.toFixed(4)), "false": Number((1 - pTrue).toFixed(4)) },
-        entropy_bits: 0.142,
-        margin: Number(Math.abs(2 * pTrue - 1).toFixed(4))
-      };
-    } else if (t === 'score') {
-      const arr = Array.isArray(crit) && crit.length ? crit : ['0', '1', '2'];
-      let rawScores = arr.map((desc, idx) => {
-        const toks = tokenize(desc);
-        let hits = toks.filter(w => stateStr.includes(w)).length;
-        return 0.4 + hits * 1.8 + (idx === arr.length - 1 && hits === 0 ? 0.2 : 0);
-      });
-      const maxS = Math.max(...rawScores);
-      let sumExp = 0;
-      const probs = {};
-      let bestIdx = 0, bestP = -1;
-      rawScores.forEach((s, idx) => {
-        const e = Math.exp(s - maxS);
-        probs[String(idx)] = e;
-        sumExp += e;
-      });
-      arr.forEach((_, idx) => {
-        const p = Number((probs[String(idx)] / sumExp).toFixed(4));
-        probs[String(idx)] = p;
-        if (p > bestP) { bestP = p; bestIdx = idx; }
-      });
-      res[qName] = { answer: String(bestIdx), confidence: bestP, probabilities: probs, entropy_bits: 0.52, margin: 0.64 };
-    } else {
-      const entries = (crit && typeof crit === 'object' && !Array.isArray(crit) && Object.keys(crit).length)
-        ? Object.entries(crit)
-        : [['option_a', 'option_a'], ['option_b', 'option_b']];
-      let rawScores = entries.map(([k, desc]) => {
-        const toks = tokenize(k + ' ' + desc);
-        let hits = toks.filter(w => stateStr.includes(w)).length;
-        return 0.3 + hits * 2.1;
-      });
-      const maxS = Math.max(...rawScores);
-      let sumExp = 0;
-      const probs = {};
-      let bestK = entries[0][0], bestP = -1;
-      entries.forEach(([k], i) => {
-        const e = Math.exp(rawScores[i] - maxS);
-        probs[k] = e;
-        sumExp += e;
-      });
-      entries.forEach(([k]) => {
-        const p = Number((probs[k] / sumExp).toFixed(4));
-        probs[k] = p;
-        if (p > bestP) { bestP = p; bestK = k; }
-      });
-      res[qName] = { answer: bestK, confidence: bestP, probabilities: probs, entropy_bits: 0.38, margin: 0.78 };
-    }
+function getServerUrl() {
+  let u = (localStorage.getItem('spark_server_url') || '').trim();
+  if (u) return u.replace(/\/+$/, '');
+  if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+    return '';
   }
-  return {
-    result: res, latency_ms: 18.4, prefill_ms: 6.2,
-    prompt_tokens: Math.max(64, Math.round(stateStr.length / 3.5)),
-    cached_state_tokens: Math.max(32, Math.round(stateStr.length / 4.2)),
-    parallel_questions: Object.keys(payload.questions || {}).length,
-    microbatch: 1, generated_tokens: 0
-  };
+  return (window.__DEFAULT_TUNNEL_URL || '').replace(/\/+$/, '');
+}
+
+function setServerUrl(u) {
+  localStorage.setItem('spark_server_url', (u || '').trim().replace(/\/+$/, ''));
+}
+
+function toggleServerBar() {
+  const bar = document.getElementById('server-config-bar');
+  if (!bar) return;
+  const isHidden = (bar.style.display === 'none' || !bar.style.display);
+  bar.style.display = isHidden ? 'flex' : 'none';
+  if (isHidden) {
+    document.getElementById('custom-server-url').value = getServerUrl();
+    document.getElementById('server-test-feedback').innerText = '';
+  }
+}
+
+async function saveAndTestServerUrl() {
+  const input = document.getElementById('custom-server-url').value.trim();
+  setServerUrl(input);
+  const fb = document.getElementById('server-test-feedback');
+  fb.style.color = '#eab308';
+  fb.innerText = '⏳ Verifica connessione in corso...';
+  const ok = await checkServerConnection(false);
+  if (ok) {
+    fb.style.color = '#3ecf8e';
+    fb.innerText = '✅ Connesso al vero modello Spark-Decide su GPU!';
+    setTimeout(() => toggleServerBar(), 1500);
+  } else {
+    fb.style.color = '#ef4444';
+    fb.innerText = '❌ Impossibile contattare il server. Verifica che sia avviato sul PC.';
+  }
+}
+
+async function checkServerConnection(silent = true) {
+  const dot = document.getElementById('conn-dot');
+  const txt = document.getElementById('conn-text');
+  const base = getServerUrl();
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const resp = await fetch((base || '') + '/api/info', { method: 'GET', cache: 'no-store', signal: ctrl.signal });
+    clearTimeout(t);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const info = await resp.json();
+    if (dot) dot.style.background = '#3ecf8e';
+    if (txt) txt.innerText = info.badge || 'Spark-Decide · GPU Online';
+    return true;
+  } catch (err) {
+    if (dot) dot.style.background = '#ef4444';
+    if (txt) txt.innerText = 'Disconnesso (clicca per URL)';
+    return false;
+  }
 }
 
 async function executePlayground() {
@@ -1698,7 +1699,7 @@ async function executePlayground() {
   const btnCard = document.getElementById('btn-card-run');
   btn.disabled = true;
   btn.innerText = '...';
-  if (btnCard) { btnCard.disabled = true; btnCard.innerText = '⏳ Elaborazione in corso...'; }
+  if (btnCard) { btnCard.disabled = true; btnCard.innerText = '⏳ In elaborazione sulla GPU...'; }
 
   // Se l'utente è nel tab JSON, sincronizziamo prima il JSON verso il Builder
   const isJsonTab = document.getElementById('req-tab-json').classList.contains('active');
@@ -1723,23 +1724,44 @@ async function executePlayground() {
   }
 
   const tStart = performance.now();
+  const base = getServerUrl();
 
   let data;
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-    const resp = await fetch('/api/decide', {
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+    const resp = await fetch((base || '') + '/api/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, fast: true }),
       signal: ctrl.signal
     });
     clearTimeout(timer);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${errText}`);
+    }
     data = await resp.json();
-  } catch (_) {
-    // Fallback autonomo su telefono/offline se il PC è spento
-    data = localEdgeFallbackDecide(payload);
+    checkServerConnection(true);
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerText = (currentLang === 'it') ? 'Esegui' : 'Run';
+    if (btnCard) { btnCard.disabled = false; btnCard.innerText = '▶ Esegui Decisione (Run)'; }
+    document.getElementById('resp-vis-pane').innerHTML = `
+      <div class="ans-card" style="border-color:#ef4444;background:#fff8f8;padding:20px;">
+        <div class="ans-head">
+          <span class="ans-name" style="color:#b91c1c;font-size:15px;">❌ Errore di Connessione al Server Reale</span>
+        </div>
+        <div class="ans-instr" style="color:#7f1d1d;line-height:1.6;margin-top:10px;font-size:13px;">
+          Impossibile comunicare con il modello Spark-Decide all'indirizzo: <code>${escapeHtml(base || 'host locale')}</code>.<br/><br/>
+          <strong>Come farlo funzionare:</strong><br/>
+          1. Sul computer, apri <strong>SparkDecide_Setup.exe</strong> e clicca su <strong>▶ Esegui server</strong>.<br/>
+          2. Se stai usando il telefono o GitHub Pages, clicca sul pulsante <strong>⚙️ Server URL</strong> in alto e incolla l'URL HTTPS generato dal launcher (oppure <code>http://127.0.0.1:7860</code> se sei sul PC).<br/>
+          3. Dettagli errore: <code>${escapeHtml(err.message)}</code>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="toggleServerBar()" style="margin-top:14px;">⚙️ Configura URL Server</button>
+      </div>`;
+    return;
   } finally {
     btn.disabled = false;
     btn.innerText = (currentLang === 'it') ? 'Esegui' : 'Run';
@@ -1975,152 +1997,33 @@ function renderSnakeUI(data, rttMs = null) {
   }
 }
 
-// Fallback autonomo Snake per Telefono / GitHub Pages (quando il PC è spento)
-const LOCAL_SNAKE = {
-  width: 10, height: 10,
-  snake: [[5, 5], [5, 6], [5, 7]],
-  direction: 'up',
-  food: [2, 2],
-  score: 0, steps: 0, alive: true, death_cause: null,
-  safe_count: 0, gr_count: 0, logs: [],
-  relDirs: {
-    up:    [['left', 'A'], ['right', 'B'], ['up', 'C']],
-    down:  [['right', 'A'], ['left', 'B'], ['down', 'C']],
-    left:  [['down', 'A'], ['up', 'B'], ['left', 'C']],
-    right: [['up', 'A'], ['down', 'B'], ['right', 'C']]
-  },
-  deltas: { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] },
-  reset() {
-    this.snake = [[5, 5], [5, 6], [5, 7]];
-    this.direction = 'up';
-    this.score = 0; this.steps = 0; this.alive = true; this.death_cause = null;
-    this.safe_count = 0; this.gr_count = 0; this.logs = [];
-    this.spawnFood();
-    return this.getPayload(null);
-  },
-  spawnFood() {
-    const occ = new Set(this.snake.map(([x, y]) => `${x},${y}`));
-    const free = [];
-    for (let x = 0; x < 10; x++) for (let y = 0; y < 10; y++) if (!occ.has(`${x},${y}`)) free.push([x, y]);
-    this.food = free.length ? free[Math.floor(Math.random() * free.length)] : [0, 0];
-  },
-  candidates() {
-    const [hx, hy] = this.snake[0];
-    const body = new Set(this.snake.slice(0, -1).map(([x, y]) => `${x},${y}`));
-    return (this.relDirs[this.direction] || this.relDirs.up).map(([d, let_]) => {
-      const [dx, dy] = this.deltas[d];
-      const nx = hx + dx, ny = hy + dy;
-      let st = 'libera';
-      if (nx < 0 || nx >= 10 || ny < 0 || ny >= 10) st = 'muro';
-      else if (body.has(`${nx},${ny}`)) st = 'corpo';
-      else if (this.food && nx === this.food[0] && ny === this.food[1]) st = 'cibo';
-      return { dir: d, letter: let_, x: nx, y: ny, status: st, safe: st === 'libera' || st === 'cibo' };
-    });
-  },
-  step(autoReset) {
-    if (!this.alive && autoReset) this.reset();
-    if (!this.alive) return this.getPayload(null);
-    const cands = this.candidates();
-    const [fx, fy] = this.food;
-    const [hx, hy] = this.snake[0];
-    const body = new Set(this.snake.slice(0, -1).map(([x, y]) => `${x},${y}`));
-    let bestDir = cands[0].dir, bestScore = -1e9;
-    const rawScores = {};
-    cands.forEach(c => {
-      if (!c.safe) { rawScores[c.dir] = -8; return; }
-      // BFS + Manhattan heuristic
-      const q = [[c.x, c.y]];
-      const vis = new Set([`${c.x},${c.y}`]);
-      while (q.length && vis.size < 45) {
-        const [cx, cy] = q.shift();
-        for (const [dx, dy] of Object.values(this.deltas)) {
-          const nx = cx + dx, ny = cy + dy, k = `${nx},${ny}`;
-          if (nx >= 0 && nx < 10 && ny >= 0 && ny < 10 && !body.has(k) && !vis.has(k)) {
-            vis.add(k); q.push([nx, ny]);
-          }
-        }
-      }
-      const dist = Math.abs(c.x - fx) + Math.abs(c.y - fy);
-      const sc = vis.size * 0.22 - dist * 1.35 + (dist === 0 ? 4.0 : 0);
-      rawScores[c.dir] = sc;
-      if (sc > bestScore) { bestScore = sc; bestDir = c.dir; }
-    });
-    const maxS = Math.max(...Object.values(rawScores));
-    let sumExp = 0;
-    const probs = {};
-    for (const [d, s] of Object.entries(rawScores)) { probs[d] = Math.exp(s - maxS); sumExp += probs[d]; }
-    for (const d of Object.keys(probs)) probs[d] = Number((probs[d] / sumExp).toFixed(4));
-    const conf = probs[bestDir] || 0.92;
-
-    const [dx, dy] = this.deltas[bestDir];
-    const nh = [hx + dx, hy + dy];
-    this.direction = bestDir;
-    this.steps++;
-    this.safe_count++;
-    let ate = false;
-    if (nh[0] < 0 || nh[0] >= 10 || nh[1] < 0 || nh[1] >= 10 || body.has(`${nh[0]},${nh[1]}`)) {
-      this.alive = false; this.death_cause = 'collision';
-    } else {
-      this.snake.unshift(nh);
-      if (nh[0] === fx && nh[1] === fy) { ate = true; this.score++; this.spawnFood(); }
-      else this.snake.pop();
-    }
-    const dec = {
-      step: this.steps, raw_choice: bestDir, final_choice: bestDir,
-      confidence: Number(conf.toFixed(4)), move_probs: probs,
-      entropy_bits: 0.142, margin: 0.892, raw_safe: true, corrected: false,
-      ate, score: this.score, latency_ms: 14.2, prefill_ms: 4.8,
-      prompt_tokens: 476, cached_tokens: 27,
-      state_json: JSON.stringify({ head: this.snake[0], food: this.food, score: this.score, candidates: cands }, null, 2)
-    };
-    this.logs.unshift({ step: this.steps, choice: bestDir, conf, ate, corrected: false, latency_ms: 14 });
-    this.logs = this.logs.slice(0, 60);
-    return this.getPayload(dec);
-  },
-  getPayload(dec) {
-    return {
-      board: {
-        width: 10, height: 10, snake: this.snake, head: this.snake[0],
-        food: this.food, direction: this.direction, score: this.score,
-        length: this.snake.length, steps: this.steps, alive: this.alive,
-        death_cause: this.death_cause, candidates: this.candidates()
-      },
-      stats: {
-        safe_pct: this.steps ? Math.round((this.safe_count / this.steps) * 100) : 100,
-        guardrail_count: this.gr_count
-      },
-      decision: dec,
-      logs: this.logs
-    };
-  }
-};
-
 async function singleStepSnake(autoReset = false) {
   if (snakeBusy) return null;
   snakeBusy = true;
   document.getElementById('sn-status-title').innerText = 'Sto decidendo...';
-  document.getElementById('sn-status-sub').innerText = 'forward pass in corso';
+  document.getElementById('sn-status-sub').innerText = 'forward pass in corso sulla GPU';
 
   const t0 = performance.now();
+  const base = getServerUrl();
   try {
     const mode = document.getElementById('sel-snake-mode').value;
     const gr = document.getElementById('chk-snake-gr').checked;
     const turbo = document.getElementById('chk-turbo-snake').checked;
-    let data;
-    try {
-      const resp = await fetch('/api/snake/step', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state_mode: mode, guardrail: gr, fast_sim: turbo, auto_reset: autoReset })
-      });
-      if (!resp.ok) throw new Error('offline');
-      data = await resp.json();
-    } catch (_) {
-      data = LOCAL_SNAKE.step(autoReset);
-    }
+    const resp = await fetch((base || '') + '/api/snake/step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state_mode: mode, guardrail: gr, fast_sim: turbo, auto_reset: autoReset })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
     const rtt = Math.round(performance.now() - t0);
     renderSnakeUI(data, rtt);
+    checkServerConnection(true);
     return data;
+  } catch (err) {
+    document.getElementById('sn-status-title').innerText = 'Server non raggiungibile';
+    document.getElementById('sn-status-sub').innerText = 'Avvia il server sul PC e configura l\'URL in alto';
+    return null;
   } finally {
     snakeBusy = false;
   }
@@ -2152,16 +2055,17 @@ async function toggleSnakeRun() {
 async function resetSnakeGame() {
   snakeLoopActive = false;
   document.getElementById('btn-snake-toggle').innerText = 'Avvia';
+  const base = getServerUrl();
   try {
-    const resp = await fetch('/api/snake/reset', {
+    const resp = await fetch((base || '') + '/api/snake/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ grid_size: 10, seed: Math.floor(Math.random() * 900) + 10 })
     });
-    if (!resp.ok) throw new Error('offline');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
     renderSnakeUI(await resp.json(), 0);
-  } catch (_) {
-    renderSnakeUI(LOCAL_SNAKE.reset(), 0);
+  } catch (err) {
+    alert('Impossibile resettare Snake: server non raggiungibile su ' + (base || 'questo host') + '. Avvia il server sul PC.');
   }
 }
 
@@ -2197,8 +2101,9 @@ function toggleRecordVideo() {
 // BENCHMARK
 // ============================================================================
 async function pollBenchmark() {
+  const base = getServerUrl();
   try {
-    const res = await fetch('/api/benchmark/status');
+    const res = await fetch((base || '') + '/api/benchmark/status');
     const st = await res.json();
     document.getElementById('b-status-msg').innerText = st.running ? `⏳ [${st.progress}%] ${st.message}` : st.message;
     if (st.results && st.results.length > 0) {
@@ -2222,7 +2127,8 @@ async function pollBenchmark() {
 async function startBench() {
   const games = parseInt(document.getElementById('b-games').value || '5', 10);
   const grid = parseInt(document.getElementById('b-grid').value || '10', 10);
-  await fetch('/api/benchmark/start', {
+  const base = getServerUrl();
+  await fetch((base || '') + '/api/benchmark/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ games, grid_size: grid, seed: 1000 })
@@ -2233,17 +2139,25 @@ async function startBench() {
 // AVVIO INIZIALE
 window.addEventListener('DOMContentLoaded', async () => {
   loadPreset('cv');
-  try {
-    const infoRes = await fetch('/api/info');
-    if (!infoRes.ok) throw new Error('offline');
-    const info = await infoRes.json();
-    document.getElementById('hw-pill-badge').innerText = info.badge;
-    const snRes = await fetch('/api/snake/state');
-    if (snRes.ok) renderSnakeUI(await snRes.json(), 0);
-  } catch (_) {
-    document.getElementById('hw-pill-badge').innerText = 'Spark-Decide-4B · mobile-standalone';
-    renderSnakeUI(LOCAL_SNAKE.reset(), 0);
+  if (!localStorage.getItem('spark_server_url') && window.location.hostname.includes('github.io')) {
+    try {
+      const tRes = await fetch('./tunnel_url.json', { cache: 'no-store' });
+      if (tRes.ok) {
+        const tj = await tRes.json();
+        if (tj.url) {
+          setServerUrl(tj.url);
+          const inp = document.getElementById('custom-server-url');
+          if (inp) inp.value = tj.url;
+        }
+      }
+    } catch (_) {}
   }
+  checkServerConnection();
+  try {
+    const base = getServerUrl();
+    const snRes = await fetch((base || '') + '/api/snake/state');
+    if (snRes.ok) renderSnakeUI(await snRes.json(), 0);
+  } catch (_) {}
 });
 </script>
 </body>
@@ -2269,3 +2183,4 @@ def launch_server(host: str = "0.0.0.0", port: int = 7860, open_browser: bool = 
 
 if __name__ == "__main__":
     launch_server(host="0.0.0.0", port=7860, open_browser=True)
+

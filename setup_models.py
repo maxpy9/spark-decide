@@ -1,11 +1,4 @@
-"""
-Script automatico di verifica e download dei modelli per Spark-Decide:
-1. Scarica il nostro modello Spark-Decide (adapter LoRA + DecisionHead + temperature)
-   direttamente dalla repository GitHub: https://github.com/maxpy9/spark-decide
-2. Scarica il modello foundational Rizzo Flow (rizzoaiacademy/rizzo-flow)
-   direttamente da HuggingFace: https://huggingface.co/rizzoaiacademy/rizzo-flow
-3. Prepara e ottimizza modeling_spark.py per l'inferenza 4-bit NF4 + FP32 CUDA.
-"""
+import concurrent.futures
 import os
 import ssl
 import urllib.request
@@ -51,17 +44,19 @@ HF_BASE_FILES = [
 
 
 def download_file(url: str, dest: str):
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     tmp_dest = dest + ".part_dl"
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    req = urllib.request.Request(url, headers={"User-Agent": "Spark-Decide-Installer/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Spark-Decide-Installer/2.0"})
     with urllib.request.urlopen(req, context=ctx) as resp, open(tmp_dest, "wb") as out:
         total = int(resp.headers.get("Content-Length", 0) or 0)
         downloaded = 0
-        chunk_size = 1024 * 1024
+        chunk_size = 4 * 1024 * 1024
         last_pct = -1
         while True:
             chunk = resp.read(chunk_size)
@@ -71,7 +66,7 @@ def download_file(url: str, dest: str):
             downloaded += len(chunk)
             if total > 0:
                 pct = int(downloaded * 100 / total)
-                if pct != last_pct and pct % 10 == 0:
+                if pct != last_pct and pct % 20 == 0:
                     mb_done = downloaded / (1024 * 1024)
                     mb_tot = total / (1024 * 1024)
                     print(f"    -> {os.path.basename(dest)}: {pct}% ({mb_done:.1f}/{mb_tot:.1f} MB)", flush=True)
@@ -85,58 +80,71 @@ def ensure_spark_decide_from_github():
 
     for fname in SPARK_DECIDE_DIRECT_FILES:
         dest = os.path.join(ADAPTER_DIR, fname)
-        if not os.path.exists(dest):
+        if not (os.path.exists(dest) and os.path.getsize(dest) > 0):
             url = f"{GITHUB_RAW_BASE}/models/spark-decide/{fname}"
-            print(f"[GitHub] Download {fname} da {GITHUB_REPO}...", flush=True)
+            print(f"[GitHub] Download veloce {fname}...", flush=True)
             download_file(url, dest)
 
     safetensors_path = os.path.join(ADAPTER_DIR, "adapter_model.safetensors")
-    if not os.path.exists(safetensors_path):
-        print(f"[GitHub] Download e ricostruzione di adapter_model.safetensors da {GITHUB_REPO}...", flush=True)
+    if not (os.path.exists(safetensors_path) and os.path.getsize(safetensors_path) > 10_000_000):
+        print(f"[GitHub] Download parallelo e ricostruzione di adapter_model.safetensors...", flush=True)
         part_paths = []
+        dl_tasks = []
         for pname in SPARK_DECIDE_PARTS:
             pdest = os.path.join(ADAPTER_DIR, pname)
-            if not os.path.exists(pdest):
-                url = f"{GITHUB_RAW_BASE}/models/spark-decide/{pname}"
-                print(f"[GitHub] Download {pname}...", flush=True)
-                download_file(url, pdest)
             part_paths.append(pdest)
+            if not (os.path.exists(pdest) and os.path.getsize(pdest) > 0):
+                url = f"{GITHUB_RAW_BASE}/models/spark-decide/{pname}"
+                dl_tasks.append((url, pdest))
+
+        if dl_tasks:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(download_file, u, d) for u, d in dl_tasks]
+                concurrent.futures.wait(futures)
 
         tmp_st = safetensors_path + ".building"
         with open(tmp_st, "wb") as out_f:
             for ppath in part_paths:
                 with open(ppath, "rb") as in_f:
                     while True:
-                        buf = in_f.read(4 * 1024 * 1024)
+                        buf = in_f.read(8 * 1024 * 1024)
                         if not buf:
                             break
                         out_f.write(buf)
         os.replace(tmp_st, safetensors_path)
-        print("[GitHub] adapter_model.safetensors ricostruito con successo!", flush=True)
+        print("[GitHub] adapter_model.safetensors pronto!", flush=True)
     else:
-        print(f"[GitHub] Modello Spark-Decide in {ADAPTER_DIR}: OK.", flush=True)
+        print(f"[GitHub] Modello Spark-Decide OK.", flush=True)
 
 
 def ensure_rizzo_flow_from_hf():
-    """Scarica il modello base Rizzo Flow da HuggingFace (rizzoaiacademy/rizzo-flow)."""
+    """Scarica il modello base Rizzo Flow da HuggingFace in parallelo."""
     os.makedirs(BASE_DIR, exist_ok=True)
-    missing = [f for f in HF_BASE_FILES if not os.path.exists(os.path.join(BASE_DIR, f))]
+    missing = [f for f in HF_BASE_FILES if not (os.path.exists(os.path.join(BASE_DIR, f)) and os.path.getsize(os.path.join(BASE_DIR, f)) > 0)]
     if not missing:
-        print(f"[HuggingFace] Modello base Rizzo Flow in {BASE_DIR}: OK (tutti i file presenti).", flush=True)
+        print(f"[HuggingFace] Modello base Rizzo Flow OK (tutti i file presenti).", flush=True)
         return
 
-    print(f"[HuggingFace] Scaricamento di {len(missing)} file da {HF_BASE_REPO}...", flush=True)
+    print(f"[HuggingFace] Download veloce di {len(missing)} file mancanti da {HF_BASE_REPO}...", flush=True)
+    dl_tasks = []
     for fname in missing:
         url = f"https://huggingface.co/{HF_BASE_REPO}/resolve/main/{fname}"
         dest = os.path.join(BASE_DIR, fname)
-        print(f"[HuggingFace] Download {fname}...", flush=True)
+        dl_tasks.append((url, dest, fname))
+
+    def _task(item):
+        u, d, fn = item
         try:
-            download_file(url, dest)
+            download_file(u, d)
         except Exception as e:
-            if fname in ("chat_template.jinja", "special_tokens_map.json"):
-                print(f"[HuggingFace] File opzionale {fname} ignorato ({e})", flush=True)
+            if fn in ("chat_template.jinja", "special_tokens_map.json"):
+                print(f"[HuggingFace] File opzionale {fn} ignorato: {e}", flush=True)
             else:
                 raise
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(_task, it) for it in dl_tasks]
+        concurrent.futures.wait(futures)
 
 
 def patch_modeling_spark(py_path: str):
@@ -158,7 +166,7 @@ def patch_modeling_spark(py_path: str):
 
 
 if __name__ == "__main__":
-    print("=== Verifica e Download Modelli (GitHub + HuggingFace) ===", flush=True)
+    print("=== Verifica e Download Modelli Spark-Decide (Veloce) ===", flush=True)
     ensure_spark_decide_from_github()
     ensure_rizzo_flow_from_hf()
     patch_modeling_spark(os.path.join(BASE_DIR, "modeling_spark.py"))
