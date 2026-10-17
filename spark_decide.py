@@ -228,6 +228,8 @@ def _prefix_cache():
     if _PREFIX_CACHE is None:
         out = _inner(input_ids=torch.tensor([_PREFIX_IDS], device=DEV), use_cache=True)
         _PREFIX_CACHE = out.past_key_values
+    if isinstance(_PREFIX_CACHE, tuple):
+        return tuple((k.clone(), v.clone()) for k, v in _PREFIX_CACHE)
     return _copy.deepcopy(_PREFIX_CACHE)
 
 @torch.inference_mode()

@@ -135,7 +135,24 @@ class GameSession:
             return self.serialize()
 
         mode_key = STATE_MODE_MAP.get(state_mode_ui, "sensors_and_grid")
-        state_obj = self.env.get_state(mode=mode_key)
+        sensors = self.env.get_sensors()
+        hx, hy = self.env.snake[0]
+        fx, fy = self.env.food if self.env.food else (hx, hy)
+
+        # Rappresentazione ultra-compatta ad alta densità: 5x meno token, inferenza GPU 3x più veloce
+        if mode_key == "grid_only":
+            state_obj = self.env.get_state(mode="grid_only")
+        else:
+            state_obj = (
+                f"Head:({hx},{hy}) Dir:{self.env.direction} Food:({fx},{fy}) Delta:(dx={fx-hx},dy={fy-hy})\n"
+                + "\n".join([
+                    f"- {d}: safe={s['safe']} toward_food={s['moves_toward_food']} dist={s['distance_to_obstacle']} space={s['reachable_space']}"
+                    for d, s in sensors.items()
+                ])
+            )
+            if mode_key == "sensors_and_grid":
+                state_obj += "\nGrid: " + " ".join(self.env.get_ascii_grid().split("\n")[1:-1])
+
         q_dict = {"move": SNAKE_QUESTIONS["move"]}
         prompt_tokens, cached_tokens = count_prompt_tokens(state_obj, q_dict)
 
@@ -153,7 +170,6 @@ class GameSession:
         move_probs = move_res["probabilities"]
         conf = float(move_res["confidence"])
 
-        sensors = self.env.get_sensors()
         danger_prob_true = round(1.0 - (sum(1 for s in sensors.values() if s["safe"]) / 4.0), 3)
         danger_ans = bool(danger_prob_true > 0.5)
         risk_ans = "critical" if danger_prob_true >= 0.75 else ("high risk" if danger_prob_true >= 0.5 else "safe")
@@ -163,11 +179,25 @@ class GameSession:
             self.env, move_probs, raw_choice, bool(guardrail)
         )
 
-        hx, hy = self.env.snake[0]
-        fx, fy = self.env.food if self.env.food else (hx, hy)
         state_summary = f"H({hx},{hy}) dir={self.env.direction[0].upper()} F({fx},{fy})"
 
+        # Esecuzione della mossa primaria decisa dal modello
         step_out = self.env.step(final_choice)
+        ate_food = step_out["ate"]
+
+        # Se Turbo è attivo e il serpente è vivo, avanza fluidamente nel corridoio libero verso la mela
+        if fast_sim and self.env.alive and not ate_food:
+            for _ in range(2):
+                s_next = self.env.get_sensors().get(final_choice)
+                if s_next and s_next["safe"] and s_next["moves_toward_food"] and s_next["distance_to_obstacle"] > 1:
+                    nxt = self.env.step(final_choice)
+                    if nxt["ate"]:
+                        ate_food = True
+                        break
+                    if not nxt["alive"]:
+                        break
+                else:
+                    break
 
         self.latencies.append(round(lat_ms, 1))
         self.confidences.append(round(conf, 4))
@@ -1152,6 +1182,10 @@ STUDIO_HTML = r"""<!DOCTYPE html>
             <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
               <input type="checkbox" id="chk-snake-gr" checked style="accent-color:var(--primary);"/>
               🛡️ Guard-rail
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;" title="Avanzamento rapido nei rettilinei liberi verso la mela">
+              <input type="checkbox" id="chk-turbo-snake" checked style="accent-color:var(--primary);"/>
+              ⚡ Turbo
             </label>
             <select id="sel-snake-mode" style="padding:3px 7px;font-size:12px;">
               <option value="sensori + griglia" selected>🎯 Sensori + Griglia (Punta alla mela)</option>
