@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="346" viewBox="0 0 900 346" role="img" aria-label="Snake: effetto del Guard-Rail su cibo e passi">
+<title>Snake: effetto del Guard-Rail su cibo e passi</title>
+<style>
+  .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+  .t1{fill:#eaf6ef} .t2{fill:#a3b8ad} .t3{fill:#6f8479} .g{fill:#2ee88a}
+  .b{font-weight:700} .sb{font-weight:600}
+  .cap{letter-spacing:.12em;font-size:11px;font-weight:700}
+.halo{paint-order:stroke;stroke:#0d1411;stroke-width:4px;stroke-linejoin:round}</style>
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0d1411"/><stop offset="1" stop-color="#0a0f0d"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#16211c"/>
+  </pattern>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<rect x="0.5" y="0.5" width="899" height="345" rx="18" fill="url(#bgGrad)" stroke="#1f2d26"/>
+<rect x="0.5" y="0.5" width="899" height="345" rx="18" fill="url(#dots)" opacity=".7"/>
+
+<text x="20" y="36" class="s b t1" font-size="17">Snake 10×10 · effetto del Guard-Rail</text>
+<text x="20" y="56" class="s t3" font-size="12">20 partite per configurazione (seed 1000–1019) · benchmark_snake.json</text>
+<g transform="translate(530,28)">
+  <circle cx="6" cy="6" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/><text x="18" y="10" class="s t2" font-size="12">Guard-Rail OFF</text>
+  <circle cx="126" cy="6" r="6" fill="#2ee88a"/><text x="138" y="10" class="s t2" font-size="12">Guard-Rail ON</text>
+  <line x1="244" y1="0" x2="244" y2="12" stroke="#3987e5" stroke-width="2"/><text x="252" y="10" class="s t2" font-size="12">baseline a regole</text>
+</g><text x="20" y="125" class="s sb t1" font-size="13">Sensori + griglia</text><text x="20" y="142" class="s t3" font-size="11.5">Spark-Decide</text><text x="20" y="187" class="s sb t1" font-size="13">Solo sensori</text><text x="20" y="204" class="s t3" font-size="11.5">Spark-Decide</text><text x="20" y="249" class="s sb t1" font-size="13">Solo griglia ASCII</text><text x="20" y="266" class="s t3" font-size="11.5">Spark-Decide</text><text x="170.0" y="84" class="s cap t1">CIBO MEDIO / PARTITA</text><line x1="170.0" y1="104" x2="170.0" y2="276" stroke="#1b2721"/><text x="170.0" y="300" class="m t3" font-size="10.5" text-anchor="middle">0</text><line x1="238.8" y1="104" x2="238.8" y2="276" stroke="#1b2721"/><text x="238.8" y="300" class="m t3" font-size="10.5" text-anchor="middle">5</text><line x1="307.5" y1="104" x2="307.5" y2="276" stroke="#1b2721"/><text x="307.5" y="300" class="m t3" font-size="10.5" text-anchor="middle">10</text><line x1="376.2" y1="104" x2="376.2" y2="276" stroke="#1b2721"/><text x="376.2" y="300" class="m t3" font-size="10.5" text-anchor="middle">15</text><line x1="445.0" y1="104" x2="445.0" y2="276" stroke="#1b2721"/><text x="445.0" y="300" class="m t3" font-size="10.5" text-anchor="middle">20</text><line x1="462.9" y1="104" x2="462.9" y2="276" stroke="#3987e5" stroke-width="2" stroke-opacity=".9"/><text x="456.9" y="98" class="s t2 halo" font-size="11" text-anchor="end">Greedy 21,3</text><line x1="192.0" y1="104" x2="192.0" y2="276" stroke="#3987e5" stroke-width="2" stroke-opacity=".9"/><text x="198.0" y="282" class="s t2 halo" font-size="11" text-anchor="start">Casuale-sicuro 1,6</text>
+<line x1="222.9" y1="120" x2="299.2" y2="120" stroke="#1c7c54" stroke-width="3"/>
+<circle cx="222.9" cy="120" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/>
+<circle cx="299.2" cy="120" r="7" fill="#2ee88a" filter="url(#glow)"/>
+<text x="222.9" y="142" class="m t3 halo" font-size="11" text-anchor="middle">3,9</text>
+<text x="311.2" y="124" class="m t1 b halo" font-size="12">9,4 <tspan class="g">×2,4</tspan></text>
+<line x1="203.0" y1="182" x2="282.1" y2="182" stroke="#1c7c54" stroke-width="3"/>
+<circle cx="203.0" cy="182" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/>
+<circle cx="282.1" cy="182" r="7" fill="#2ee88a" filter="url(#glow)"/>
+<text x="203.0" y="204" class="m t3 halo" font-size="11" text-anchor="middle">2,4</text>
+<text x="294.1" y="186" class="m t1 b halo" font-size="12">8,2 <tspan class="g">×3,4</tspan></text>
+<line x1="185.8" y1="244" x2="219.5" y2="244" stroke="#1c7c54" stroke-width="3"/>
+<circle cx="185.8" cy="244" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/>
+<circle cx="219.5" cy="244" r="7" fill="#2ee88a" filter="url(#glow)"/>
+<text x="185.8" y="266" class="m t3 halo" font-size="11" text-anchor="middle">1,1</text>
+<text x="231.5" y="248" class="m t1 b halo" font-size="12">3,6 <tspan class="g">×3,1</tspan></text><text x="540.0" y="84" class="s cap t1">PASSI MEDI / PARTITA</text><line x1="540.0" y1="104" x2="540.0" y2="276" stroke="#1b2721"/><text x="540.0" y="300" class="m t3" font-size="10.5" text-anchor="middle">0</text><line x1="622.5" y1="104" x2="622.5" y2="276" stroke="#1b2721"/><text x="622.5" y="300" class="m t3" font-size="10.5" text-anchor="middle">60</text><line x1="705.0" y1="104" x2="705.0" y2="276" stroke="#1b2721"/><text x="705.0" y="300" class="m t3" font-size="10.5" text-anchor="middle">120</text><line x1="787.5" y1="104" x2="787.5" y2="276" stroke="#1b2721"/><text x="787.5" y="300" class="m t3" font-size="10.5" text-anchor="middle">180</text><line x1="870.0" y1="104" x2="870.0" y2="276" stroke="#1b2721"/><text x="870.0" y="300" class="m t3" font-size="10.5" text-anchor="middle">240</text><line x1="788.2" y1="104" x2="788.2" y2="276" stroke="#3987e5" stroke-width="2" stroke-opacity=".9"/><text x="782.2" y="98" class="s t2 halo" font-size="11" text-anchor="end">Greedy 180</text><line x1="838.9" y1="104" x2="838.9" y2="276" stroke="#3987e5" stroke-width="2" stroke-opacity=".9"/><text x="832.9" y="282" class="s t2 halo" font-size="11" text-anchor="end">Casuale-sicuro 217</text>
+<line x1="580.4" y1="120" x2="655.8" y2="120" stroke="#1c7c54" stroke-width="3"/>
+<circle cx="580.4" cy="120" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/>
+<circle cx="655.8" cy="120" r="7" fill="#2ee88a" filter="url(#glow)"/>
+<text x="580.4" y="142" class="m t3 halo" font-size="11" text-anchor="middle">29</text>
+<text x="667.8" y="124" class="m t1 b halo" font-size="12">84 <tspan class="g">×2,9</tspan></text>
+<line x1="567.2" y1="182" x2="645.2" y2="182" stroke="#1c7c54" stroke-width="3"/>
+<circle cx="567.2" cy="182" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/>
+<circle cx="645.2" cy="182" r="7" fill="#2ee88a" filter="url(#glow)"/>
+<text x="567.2" y="204" class="m t3 halo" font-size="11" text-anchor="middle">20</text>
+<text x="657.2" y="186" class="m t1 b halo" font-size="12">76 <tspan class="g">×3,9</tspan></text>
+<line x1="551.8" y1="244" x2="606.4" y2="244" stroke="#1c7c54" stroke-width="3"/>
+<circle cx="551.8" cy="244" r="5.5" fill="#0d1411" stroke="#5e7d6c" stroke-width="2"/>
+<circle cx="606.4" cy="244" r="7" fill="#2ee88a" filter="url(#glow)"/>
+<text x="551.8" y="266" class="m t3 halo" font-size="11" text-anchor="middle">9</text>
+<text x="618.4" y="248" class="m t1 b halo" font-size="12">48 <tspan class="g">×5,6</tspan></text>
+<text x="20" y="324" class="s t3" font-size="11">La partita finisce anche dopo 40 passi senza cibo. Il Guard-Rail sostituisce una mossa mortale con la mossa sicura più probabile secondo il modello.</text>
+</svg>

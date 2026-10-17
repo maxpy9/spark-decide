@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="620" viewBox="0 0 900 620" role="img" aria-label="Architettura di Spark-Decide">
+<title>Architettura di Spark-Decide</title>
+<style>
+  .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+  .t1{fill:#eaf6ef} .t2{fill:#a3b8ad} .t3{fill:#6f8479} .g{fill:#2ee88a}
+  .b{font-weight:700} .sb{font-weight:600}
+  .cap{letter-spacing:.12em;font-size:11px;font-weight:700}
+
+  .flow{animation:flow 1.6s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-36}}
+  @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0d1411"/><stop offset="1" stop-color="#0a0f0d"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#16211c"/>
+  </pattern>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<rect x="0.5" y="0.5" width="899" height="619" rx="18" fill="url(#bgGrad)" stroke="#1f2d26"/>
+<rect x="0.5" y="0.5" width="899" height="619" rx="18" fill="url(#dots)" opacity=".7"/>
+<line x1="54" y1="56" x2="54" y2="496" stroke="#1c7c54" stroke-width="2"/><line class="flow" x1="54" y1="56" x2="54" y2="496" stroke="#2ee88a" stroke-width="2" stroke-dasharray="4 14"/>
+<circle cx="54" cy="56" r="13" fill="#0d1411" stroke="#2ee88a" stroke-width="2"/>
+<text x="54" y="61" class="s b g" font-size="13" text-anchor="middle">1</text>
+<text x="78" y="54" class="s cap t1">INPUT</text>
+<text x="78" y="72" class="s t3" font-size="12">STATE + domande</text>
+<rect x="210" y="36" width="660" height="86" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+<circle cx="54" cy="160" r="13" fill="#0d1411" stroke="#2ee88a" stroke-width="2"/>
+<text x="54" y="165" class="s b g" font-size="13" text-anchor="middle">2</text>
+<text x="78" y="158" class="s cap t1">PROMPT</text>
+<text x="78" y="176" class="s t3" font-size="12">template fisso</text>
+<rect x="210" y="140" width="660" height="92" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+<circle cx="54" cy="272" r="13" fill="#0d1411" stroke="#2ee88a" stroke-width="2"/>
+<text x="54" y="277" class="s b g" font-size="13" text-anchor="middle">3</text>
+<text x="78" y="270" class="s cap t1">BACKBONE</text>
+<text x="78" y="288" class="s t3" font-size="12">1 forward pass</text>
+<rect x="210" y="252" width="660" height="92" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+<circle cx="54" cy="384" r="13" fill="#0d1411" stroke="#2ee88a" stroke-width="2"/>
+<text x="54" y="389" class="s b g" font-size="13" text-anchor="middle">4</text>
+<text x="78" y="382" class="s cap t1">DECISIONHEAD</text>
+<text x="78" y="400" class="s t3" font-size="12">testa neurale</text>
+<rect x="210" y="364" width="660" height="92" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+<circle cx="54" cy="496" r="13" fill="#0d1411" stroke="#2ee88a" stroke-width="2"/>
+<text x="54" y="501" class="s b g" font-size="13" text-anchor="middle">5</text>
+<text x="78" y="494" class="s cap t1">OUTPUT</text>
+<text x="78" y="512" class="s t3" font-size="12">calibrato</text>
+<rect x="210" y="476" width="660" height="112" rx="12" fill="#0b120f" stroke="#1f2d26"/>
+<text x="226" y="60" class="m t3" font-size="11">STATE</text>
+<rect x="226" y="68" width="282" height="40" rx="8" fill="#101a15" stroke="#1f2d26"/>
+<text x="238" y="86" class="m t1" font-size="11.5">"Hi, I was charged twice for</text>
+<text x="238" y="101" class="m t1" font-size="11.5"> invoice #4411. Please refund…"</text>
+<text x="524" y="60" class="m t3" font-size="11">QUESTIONS</text>
+<g transform="translate(524,68)">
+  <rect width="102" height="40" rx="8" fill="#101a15" stroke="#3987e5" stroke-opacity=".7"/>
+  <text x="12" y="17" class="m t1" font-size="11.5">team</text><text x="12" y="32" class="m t3" font-size="10.5">choice</text>
+  <rect x="112" width="102" height="40" rx="8" fill="#101a15" stroke="#d95926" stroke-opacity=".7"/>
+  <text x="124" y="17" class="m t1" font-size="11.5">refund</text><text x="124" y="32" class="m t3" font-size="10.5">boolean</text>
+  <rect x="224" width="102" height="40" rx="8" fill="#101a15" stroke="#199e70" stroke-opacity=".9"/>
+  <text x="236" y="17" class="m t1" font-size="11.5">urgency</text><text x="236" y="32" class="m t3" font-size="10.5">score</text>
+</g><rect x="226" y="156" width="144" height="30" rx="7" fill="#12241b" stroke="#2ee88a" stroke-opacity="1"/><text x="298.0" y="175" class="m g" font-size="11" text-anchor="middle">SYS + "STATE:"</text><rect x="376" y="156" width="98" height="30" rx="7" fill="#101a15" stroke="#6f8479" stroke-opacity="0.55"/><text x="425.0" y="175" class="m t1" font-size="11" text-anchor="middle">stato…</text><rect x="480" y="156" width="90" height="30" rx="7" fill="#101a15" stroke="#6f8479" stroke-opacity="0.55"/><text x="525.0" y="175" class="m t1" font-size="11" text-anchor="middle">QUESTIONS:</text><rect x="576" y="156" width="146" height="30" rx="7" fill="#101a15" stroke="#3987e5" stroke-opacity="0.55"/><text x="649.0" y="175" class="m t1" font-size="11" text-anchor="middle">Q1 A) B) C) Answer:</text><rect x="728" y="156" width="56" height="30" rx="7" fill="#101a15" stroke="#d95926" stroke-opacity="0.55"/><text x="756.0" y="175" class="m t1" font-size="11" text-anchor="middle">Q2 …</text><rect x="790" y="156" width="56" height="30" rx="7" fill="#101a15" stroke="#199e70" stroke-opacity="0.55"/><text x="818.0" y="175" class="m t1" font-size="11" text-anchor="middle">Q3 …</text>
+<path d="M226 196 v8 h144 v-8" fill="none" stroke="#2ee88a" stroke-opacity=".7"/>
+<text x="226" y="220" class="s g" font-size="12">KV-prefix cache: calcolato una volta, riusato a ogni chiamata</text>
+<text x="854" y="220" class="s t3" font-size="12" text-anchor="end">max 2.048 token</text>
+<text x="226" y="280" class="s b t1" font-size="15">Rizzo Flow 4B <tspan class="t3" font-weight="400">(Spark-X2.5-4B)</tspan> <tspan class="g">+ LoRA Spark-Decide</tspan></text>
+<text x="226" y="300" class="m t3" font-size="11.5">r 32 · α 64 · gate/up/down/qkv/out proj · fuso con merge_and_unload()</text><rect x="226" y="312" width="172" height="22" rx="11" fill="#101a15" stroke="#1f2d26"/><text x="312.0" y="327" class="m t2" font-size="11" text-anchor="middle">4-bit NF4 double-quant</text><rect x="406" y="312" width="104" height="22" rx="11" fill="#101a15" stroke="#1f2d26"/><text x="458.0" y="327" class="m t2" font-size="11" text-anchor="middle">2,62 GB VRAM</text><rect x="518" y="312" width="180" height="22" rx="11" fill="#101a15" stroke="#1f2d26"/><text x="608.0" y="327" class="m t2" font-size="11" text-anchor="middle">FP32 compute su sm ≤ 7.5</text><rect x="706" y="312" width="128" height="22" rx="11" fill="#101a15" stroke="#1f2d26"/><text x="770.0" y="327" class="m t2" font-size="11" text-anchor="middle">0 token generati</text><text x="226" y="390" class="m g b" font-size="13">h_opt</text><text x="226" y="407" class="s t3" font-size="11.5">ultimo token di ogni opzione</text><text x="408" y="390" class="m g b" font-size="13">h_end</text><text x="408" y="407" class="s t3" font-size="11.5">token "Answer:"</text><text x="590" y="390" class="m g b" font-size="13">ll</text><text x="590" y="407" class="s t3" font-size="11.5">logit delle lettere A, B, C…</text>
+<line x1="226" y1="420" x2="854" y2="420" stroke="#1b2721"/>
+<text x="226" y="442" class="m t1" font-size="12.5">z = MLP(o⊙q + o + q) + α·ll</text>
+<text x="854" y="442" class="m t3" font-size="11.5" text-anchor="end">o = Wₒ·LN(h_opt) · q = W_q·LN(h_end) + E[tipo]</text>
+<text x="226" y="504" class="m t1" font-size="13">p = softmax(z / T)</text>
+<text x="226" y="524" class="s t3" font-size="12">T = 1,125 per tipo · temperatures.json</text>
+<rect x="460" y="488" width="394" height="88" rx="8" fill="#08100c" stroke="#1f2d26"/>
+<text x="474" y="510" class="m t2" font-size="11.5"><tspan class="t3">"move":</tspan> { <tspan class="t3">"answer":</tspan> <tspan class="g">"right"</tspan>, <tspan class="t3">"confidence":</tspan> <tspan class="t1">0.9954</tspan>,</text>
+<text x="474" y="530" class="m t2" font-size="11.5">  <tspan class="t3">"probabilities":</tspan> { up 0.0011, down 0.0012,</text>
+<text x="474" y="550" class="m t2" font-size="11.5">                   left 0.0024, <tspan class="g">right 0.9954</tspan> } }</text>
+<text x="474" y="568" class="s t3" font-size="10.5">esempio da detailed_traces.json, Snake passo 1</text>
+</svg>
