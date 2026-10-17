@@ -25,7 +25,7 @@ namespace SparkDecideInstaller
         private Label statusPill;
         private Label statusLabel;
         private ProgressBar progressBar;
-        private RichTextBox logBox;
+        private TextBox logBox;
         private PictureBox logoBox;
 
         private Process serverProcess = null;
@@ -37,13 +37,30 @@ namespace SparkDecideInstaller
         public MainForm()
         {
             // Default working directory: directory where this launcher is located
-            workDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string cur = Environment.CurrentDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (File.Exists(Path.Combine(cur, "spark_decide.py")))
+            {
+                workDir = cur;
+            }
+            else if (File.Exists(Path.Combine(baseDir, "spark_decide.py")))
+            {
+                workDir = baseDir;
+            }
+            else if (Directory.Exists(@"C:\Users\Acer\spark-snake"))
+            {
+                workDir = @"C:\Users\Acer\spark-snake";
+            }
+            else
+            {
+                workDir = cur;
+            }
             LoadSavedConfig();
 
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
 
-            this.Text = "⚡ Spark-Decide — Installer & Studio Launcher";
+            this.Text = "Spark-Decide — Installer & Studio Launcher";
             this.Size = new Size(860, 650);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(15, 18, 24); // #0F1218
@@ -53,6 +70,7 @@ namespace SparkDecideInstaller
             this.MaximizeBox = false;
 
             string icoPath = Path.Combine(workDir, "spark_decide.ico");
+            if (!File.Exists(icoPath)) icoPath = Path.Combine(baseDir, "spark_decide.ico");
             if (File.Exists(icoPath))
             {
                 try { this.Icon = new Icon(icoPath); } catch { }
@@ -61,9 +79,10 @@ namespace SparkDecideInstaller
             BuildUI();
 
             AppendLog("=== Spark-Decide Automated Setup & Studio Launcher ===");
-            AppendLog("Modello Spark-Decide (GitHub): https://github.com/maxpy9/spark-decide");
-            AppendLog("Modello Foundation Rizzo Flow (HF): https://huggingface.co/rizzoaiacademy/rizzo-flow");
-            AppendLog("Cartella selezionata: " + workDir);
+            AppendLog("Modello Foundation: Rizzo Flow 4B (HuggingFace)");
+            AppendLog("Motore Decisionale: Spark-Decide (LoRA + DecisionHead)");
+            AppendLog("Cartella di lavoro: " + workDir);
+            AppendLog("Stato: Pronto. Clicca 'Installa tutto' per verificare i file o 'Esegui server'.");
 
             this.FormClosing += (s, e) => {
                 SaveConfig();
@@ -83,10 +102,20 @@ namespace SparkDecideInstaller
             logoBox.Size = new Size(58, 58);
             logoBox.Location = new Point(18, 13);
             logoBox.SizeMode = PictureBoxSizeMode.Zoom;
-            string pngPath = Path.Combine(workDir, "spark_decide_logo.png");
-            if (File.Exists(pngPath))
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string cur = Environment.CurrentDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string[] possibleLogos = new string[] {
+                Path.Combine(workDir, "spark_decide_logo.png"),
+                Path.Combine(baseDir, "spark_decide_logo.png"),
+                Path.Combine(cur, "spark_decide_logo.png"),
+                @"C:\Users\Acer\spark-snake\spark_decide_logo.png"
+            };
+            foreach (string lp in possibleLogos)
             {
-                try { logoBox.Image = Image.FromFile(pngPath); } catch { }
+                if (File.Exists(lp))
+                {
+                    try { logoBox.Image = Image.FromFile(lp); break; } catch { }
+                }
             }
             headerPanel.Controls.Add(logoBox);
 
@@ -128,7 +157,7 @@ namespace SparkDecideInstaller
             folderCard.BorderStyle = BorderStyle.FixedSingle;
 
             Label folderTitle = new Label();
-            folderTitle.Text = "📂 Cartella di Installazione & Modelli:";
+            folderTitle.Text = "Cartella di Installazione & Modelli:";
             folderTitle.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
             folderTitle.ForeColor = Color.FromArgb(200, 210, 225);
             folderTitle.Location = new Point(12, 8);
@@ -138,13 +167,13 @@ namespace SparkDecideInstaller
             lblDiskSpace = new Label();
             lblDiskSpace.Font = new Font("Segoe UI", 8.5f, FontStyle.Regular);
             lblDiskSpace.ForeColor = Color.FromArgb(62, 207, 142);
-            lblDiskSpace.Location = new Point(260, 9);
+            lblDiskSpace.Location = new Point(245, 9);
             lblDiskSpace.AutoSize = true;
             folderCard.Controls.Add(lblDiskSpace);
 
             txtWorkDir = new TextBox();
             txtWorkDir.Location = new Point(12, 32);
-            txtWorkDir.Size = new Size(660, 25);
+            txtWorkDir.Size = new Size(680, 25);
             txtWorkDir.BackColor = Color.FromArgb(13, 16, 23);
             txtWorkDir.ForeColor = Color.FromArgb(230, 237, 243);
             txtWorkDir.BorderStyle = BorderStyle.FixedSingle;
@@ -160,14 +189,14 @@ namespace SparkDecideInstaller
             folderCard.Controls.Add(txtWorkDir);
 
             btnBrowse = new Button();
-            btnBrowse.Text = "📁 Sfoglia...";
+            btnBrowse.Text = "Sfoglia...";
             btnBrowse.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
             btnBrowse.BackColor = Color.FromArgb(33, 38, 45);
             btnBrowse.ForeColor = Color.FromArgb(230, 237, 243);
             btnBrowse.FlatStyle = FlatStyle.Flat;
             btnBrowse.FlatAppearance.BorderColor = Color.FromArgb(60, 70, 85);
-            btnBrowse.Size = new Size(115, 27);
-            btnBrowse.Location = new Point(680, 31);
+            btnBrowse.Size = new Size(95, 27);
+            btnBrowse.Location = new Point(700, 31);
             btnBrowse.Cursor = Cursors.Hand;
             btnBrowse.Click += (s, e) => BrowseAndSetFolder();
             folderCard.Controls.Add(btnBrowse);
@@ -180,7 +209,7 @@ namespace SparkDecideInstaller
             int btnH = 42;
 
             btnInstallAll = new Button();
-            btnInstallAll.Text = "📦 Installa tutto";
+            btnInstallAll.Text = "Installa tutto";
             btnInstallAll.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             btnInstallAll.BackColor = Color.FromArgb(16, 185, 129); // #10B981
             btnInstallAll.ForeColor = Color.FromArgb(10, 30, 20);
@@ -193,7 +222,7 @@ namespace SparkDecideInstaller
             this.Controls.Add(btnInstallAll);
 
             btnStartServer = new Button();
-            btnStartServer.Text = "▶ Esegui server";
+            btnStartServer.Text = "► Esegui server";
             btnStartServer.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
             btnStartServer.BackColor = Color.FromArgb(62, 207, 142); // #3ECF8E
             btnStartServer.ForeColor = Color.FromArgb(5, 35, 20);
@@ -206,7 +235,7 @@ namespace SparkDecideInstaller
             this.Controls.Add(btnStartServer);
 
             btnStopServer = new Button();
-            btnStopServer.Text = "⏹ Stoppa il server";
+            btnStopServer.Text = "■ Stoppa il server";
             btnStopServer.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             btnStopServer.BackColor = Color.FromArgb(45, 20, 20);
             btnStopServer.ForeColor = Color.FromArgb(252, 165, 165);
@@ -220,7 +249,7 @@ namespace SparkDecideInstaller
             this.Controls.Add(btnStopServer);
 
             btnOpenBrowser = new Button();
-            btnOpenBrowser.Text = "🌐 Apri Studio";
+            btnOpenBrowser.Text = "Apri Studio";
             btnOpenBrowser.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
             btnOpenBrowser.BackColor = Color.FromArgb(31, 36, 48);
             btnOpenBrowser.ForeColor = Color.FromArgb(230, 237, 243);
@@ -259,7 +288,7 @@ namespace SparkDecideInstaller
             logHeader.BackColor = Color.FromArgb(22, 27, 34);
 
             Label logTitle = new Label();
-            logTitle.Text = "💻 Console di Esecuzione ed Installazione";
+            logTitle.Text = "Console di Esecuzione ed Installazione";
             logTitle.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
             logTitle.ForeColor = Color.FromArgb(139, 148, 158);
             logTitle.Location = new Point(10, 6);
@@ -267,7 +296,7 @@ namespace SparkDecideInstaller
             logHeader.Controls.Add(logTitle);
 
             btnCopyLog = new Button();
-            btnCopyLog.Text = "📋 Copia Log";
+            btnCopyLog.Text = "Copia Log";
             btnCopyLog.Font = new Font("Segoe UI", 7.5f, FontStyle.Regular);
             btnCopyLog.BackColor = Color.FromArgb(33, 38, 45);
             btnCopyLog.ForeColor = Color.FromArgb(200, 210, 225);
@@ -286,7 +315,7 @@ namespace SparkDecideInstaller
             logHeader.Controls.Add(btnCopyLog);
 
             btnClearLog = new Button();
-            btnClearLog.Text = "🧹 Pulisci";
+            btnClearLog.Text = "Pulisci";
             btnClearLog.Font = new Font("Segoe UI", 7.5f, FontStyle.Regular);
             btnClearLog.BackColor = Color.FromArgb(33, 38, 45);
             btnClearLog.ForeColor = Color.FromArgb(200, 210, 225);
@@ -301,7 +330,9 @@ namespace SparkDecideInstaller
             this.Controls.Add(logHeader);
 
             // Log Console Box
-            logBox = new RichTextBox();
+            logBox = new TextBox();
+            logBox.Multiline = true;
+            logBox.ScrollBars = ScrollBars.Vertical;
             logBox.Location = new Point(18, 296);
             logBox.Size = new Size(810, 295);
             logBox.BackColor = Color.FromArgb(9, 12, 16); // #090C10
@@ -323,7 +354,7 @@ namespace SparkDecideInstaller
                     if (di.IsReady)
                     {
                         double freeGb = di.AvailableFreeSpace / (1024.0 * 1024.0 * 1024.0);
-                        lblDiskSpace.Text = string.Format("💾 Spazio libero su {0}: {1:0.1} GB (Richiesti: ~8 GB)", root, freeGb);
+                        lblDiskSpace.Text = string.Format("• Spazio libero su {0}: {1:0.1} GB (Richiesti: ~8 GB)", root, freeGb);
                         if (freeGb < 8.0)
                         {
                             lblDiskSpace.ForeColor = Color.FromArgb(248, 113, 113);
@@ -337,7 +368,7 @@ namespace SparkDecideInstaller
                 }
             }
             catch { }
-            lblDiskSpace.Text = "💾 Spazio su disco pronto.";
+            lblDiskSpace.Text = "• Spazio su disco pronto.";
         }
 
         private void SetPill(string text, Color bg, Color fg)
@@ -827,6 +858,24 @@ namespace SparkDecideInstaller
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            if (args.Length > 0 && args[0] == "--screenshot")
+            {
+                string outPath = args.Length > 1 ? args[1] : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screen_setup_gui.png");
+                MainForm f = new MainForm();
+                f.Show();
+                Application.DoEvents();
+                Thread.Sleep(600);
+                Application.DoEvents();
+                using (Bitmap bmp = new Bitmap(f.Width, f.Height))
+                {
+                    f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+                    bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                f.Close();
+                return;
+            }
+
             Application.Run(new MainForm());
         }
     }

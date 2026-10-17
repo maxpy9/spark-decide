@@ -111,6 +111,10 @@ Puoi scaricare direttamente **[`SparkDecide_Setup.exe`](https://github.com/maxpy
 irm https://raw.githubusercontent.com/maxpy9/spark-decide/main/Download_SparkDecide.ps1 | iex
 ```
 
+<p align="center">
+  <img src="screen_setup_gui.png" alt="Spark-Decide Launcher GUI" width="720" style="border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);"/>
+</p>
+
 All'apertura dell'eseguibile troverai un'interfaccia scura moderna e intuitiva:
 - **`📂 Cartella di Installazione`**: visualizza il percorso di destinazione e lo **spazio libero su disco** in tempo reale, con il pulsante **`📁 Sfoglia...`** per salvare modelli ed ambiente su qualsiasi partizione (es. `D:\SparkDecide`).
 - **`📦 Installa tutto`**: prima del download **ti chiede dove desideri installare**, quindi procede con il download parallelo a 8 stream da HuggingFace e GitHub e la verifica immediata delle librerie.
