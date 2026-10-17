@@ -1,0 +1,21 @@
+# Virtual environment & caches
+.venv/
+__pycache__/
+*.pyc
+eq_results/
+
+# Base model (scaricato da HuggingFace: rizzoaiacademy/rizzo-flow)
+models/rizzo-flow/
+
+# Modello fuso locale (generato in automatico al primo avvio)
+models/spark-decide-merged/
+models/_orig/
+
+# Il file safetensors da 247MB viene ricostruito in automatico dalle 3 parti .part1/.part2/.part3 nel repo
+models/spark-decide/adapter_model.safetensors
+*.part_dl
+*.building
+
+# Utility esterne
+cloudflared.exe
+python-*.exe

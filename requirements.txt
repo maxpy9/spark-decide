@@ -1,0 +1,10 @@
+torch
+transformers>=4.51,<5
+peft>=0.13,<0.18
+accelerate
+safetensors
+huggingface_hub
+gradio
+matplotlib
+pandas
+numpy
