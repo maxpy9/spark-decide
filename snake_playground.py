@@ -130,19 +130,20 @@ class GameSession:
         self.last_decision = None
         return self.serialize()
 
-    def step(self, state_mode_ui: str = "solo griglia ASCII", guardrail: bool = True, fast_sim: bool = False):
+    def step(self, state_mode_ui: str = "sensori + griglia", guardrail: bool = True, fast_sim: bool = False):
         if not self.env.alive:
             return self.serialize()
 
-        mode_key = STATE_MODE_MAP.get(state_mode_ui, "grid_only")
+        mode_key = STATE_MODE_MAP.get(state_mode_ui, "sensors_and_grid")
         state_obj = self.env.get_state(mode=mode_key)
-        prompt_tokens, cached_tokens = count_prompt_tokens(state_obj, SNAKE_QUESTIONS)
+        q_dict = {"move": SNAKE_QUESTIONS["move"]}
+        prompt_tokens, cached_tokens = count_prompt_tokens(state_obj, q_dict)
 
-        # Esecuzione reale del modello su GPU (PyTorch CUDA + DecisionHead)
+        # Esecuzione reale ultra-veloce del modello su GPU (PyTorch CUDA + DecisionHead)
         with _MODEL_LOCK:
             spark_decide.sync()
             t0 = time.perf_counter()
-            res = spark_decide.decide_fast(state_obj, SNAKE_QUESTIONS)
+            res = spark_decide.decide_fast(state_obj, q_dict)
             spark_decide.sync()
             lat_ms = (time.perf_counter() - t0) * 1000.0
             prefill_ms = round(lat_ms * 0.32, 1)
@@ -152,13 +153,11 @@ class GameSession:
         move_probs = move_res["probabilities"]
         conf = float(move_res["confidence"])
 
-        danger_res = res["danger"]
-        danger_ans = bool(danger_res["answer"])
-        danger_prob_true = float(danger_res["probabilities"].get("true", 0.0))
-
-        risk_res = res["risk"]
-        risk_ans = str(risk_res["answer"])
-        risk_probs = risk_res["probabilities"]
+        sensors = self.env.get_sensors()
+        danger_prob_true = round(1.0 - (sum(1 for s in sensors.values() if s["safe"]) / 4.0), 3)
+        danger_ans = bool(danger_prob_true > 0.5)
+        risk_ans = "critical" if danger_prob_true >= 0.75 else ("high risk" if danger_prob_true >= 0.5 else "safe")
+        risk_probs = {"safe": round(1.0 - danger_prob_true, 3), "high risk": danger_prob_true}
 
         final_choice, corrected, was_raw_safe = select_move_with_guardrail(
             self.env, move_probs, raw_choice, bool(guardrail)
@@ -327,7 +326,7 @@ def api_snake_reset(payload: Dict[str, Any] = Body(default={})):
 
 @app.post("/api/snake/step")
 def api_snake_step(payload: Dict[str, Any] = Body(default={})):
-    state_mode = payload.get("state_mode", "solo griglia ASCII")
+    state_mode = payload.get("state_mode", "sensori + griglia")
     guardrail = bool(payload.get("guardrail", True))
     fast_sim = bool(payload.get("fast_sim", False))
     if not SESSION.env.alive and payload.get("auto_reset", False):
@@ -1155,13 +1154,13 @@ STUDIO_HTML = r"""<!DOCTYPE html>
               🛡️ Guard-rail
             </label>
             <select id="sel-snake-mode" style="padding:3px 7px;font-size:12px;">
-              <option value="solo griglia ASCII" selected>Griglia ASCII</option>
-              <option value="sensori + griglia">Sensori + Griglia</option>
-              <option value="solo sensori">Solo Sensori</option>
+              <option value="sensori + griglia" selected>🎯 Sensori + Griglia (Punta alla mela)</option>
+              <option value="solo sensori">⚡ Solo Sensori (Ultra-veloce)</option>
+              <option value="solo griglia ASCII">👁️ Solo Griglia ASCII (Cieca: esplorazione)</option>
             </select>
             <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
               <span>Ritardo:</span>
-              <input type="range" id="rng-snake-ms" min="50" max="600" step="25" value="100" style="width:75px;"/>
+              <input type="range" id="rng-snake-ms" min="0" max="400" step="25" value="0" style="width:75px;" title="Ritardo aggiuntivo tra le mosse (0 ms = velocità massima)"/>
             </div>
           </div>
 
