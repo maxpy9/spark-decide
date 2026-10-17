@@ -1,15 +1,22 @@
+import argparse
 import concurrent.futures
 import os
 import ssl
+import time
 import urllib.request
 
+parser = argparse.ArgumentParser(description="Spark-Decide Fast Model Downloader & Setup")
+parser.add_argument("--dir", default=os.environ.get("SPARK_ROOT_DIR", "."), help="Cartella principale di destinazione")
+args, _ = parser.parse_known_args()
+
+ROOT_DIR = os.path.abspath(args.dir)
 GITHUB_REPO = "maxpy9/spark-decide"
 GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main"
 
 HF_BASE_REPO = "rizzoaiacademy/rizzo-flow"
-BASE_DIR = os.path.join("models", "rizzo-flow")
-ADAPTER_DIR = os.path.join("models", "spark-decide")
-MERGED_DIR = os.path.join("models", "spark-decide-merged")
+BASE_DIR = os.path.join(ROOT_DIR, "models", "rizzo-flow")
+ADAPTER_DIR = os.path.join(ROOT_DIR, "models", "spark-decide")
+MERGED_DIR = os.path.join(ROOT_DIR, "models", "spark-decide-merged")
 
 SPARK_DECIDE_DIRECT_FILES = [
     "adapter_config.json",
@@ -53,10 +60,11 @@ def download_file(url: str, dest: str):
     ctx.verify_mode = ssl.CERT_NONE
 
     req = urllib.request.Request(url, headers={"User-Agent": "Spark-Decide-Installer/2.0"})
+    t_start = time.time()
     with urllib.request.urlopen(req, context=ctx) as resp, open(tmp_dest, "wb") as out:
         total = int(resp.headers.get("Content-Length", 0) or 0)
         downloaded = 0
-        chunk_size = 4 * 1024 * 1024
+        chunk_size = 16 * 1024 * 1024
         last_pct = -1
         while True:
             chunk = resp.read(chunk_size)
@@ -67,9 +75,11 @@ def download_file(url: str, dest: str):
             if total > 0:
                 pct = int(downloaded * 100 / total)
                 if pct != last_pct and pct % 20 == 0:
+                    elapsed = max(0.1, time.time() - t_start)
+                    speed_mbs = (downloaded / (1024 * 1024)) / elapsed
                     mb_done = downloaded / (1024 * 1024)
                     mb_tot = total / (1024 * 1024)
-                    print(f"    -> {os.path.basename(dest)}: {pct}% ({mb_done:.1f}/{mb_tot:.1f} MB)", flush=True)
+                    print(f"    -> {os.path.basename(dest)}: {pct}% ({mb_done:.1f}/{mb_tot:.1f} MB @ {speed_mbs:.1f} MB/s)", flush=True)
                     last_pct = pct
     os.replace(tmp_dest, dest)
 
@@ -98,7 +108,7 @@ def ensure_spark_decide_from_github():
                 dl_tasks.append((url, pdest))
 
         if dl_tasks:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 futures = [executor.submit(download_file, u, d) for u, d in dl_tasks]
                 concurrent.futures.wait(futures)
 
@@ -107,7 +117,7 @@ def ensure_spark_decide_from_github():
             for ppath in part_paths:
                 with open(ppath, "rb") as in_f:
                     while True:
-                        buf = in_f.read(8 * 1024 * 1024)
+                        buf = in_f.read(16 * 1024 * 1024)
                         if not buf:
                             break
                         out_f.write(buf)
@@ -118,14 +128,14 @@ def ensure_spark_decide_from_github():
 
 
 def ensure_rizzo_flow_from_hf():
-    """Scarica il modello base Rizzo Flow da HuggingFace in parallelo."""
+    """Scarica il modello base Rizzo Flow da HuggingFace in parallelo multi-thread."""
     os.makedirs(BASE_DIR, exist_ok=True)
     missing = [f for f in HF_BASE_FILES if not (os.path.exists(os.path.join(BASE_DIR, f)) and os.path.getsize(os.path.join(BASE_DIR, f)) > 0)]
     if not missing:
         print(f"[HuggingFace] Modello base Rizzo Flow OK (tutti i file presenti).", flush=True)
         return
 
-    print(f"[HuggingFace] Download veloce di {len(missing)} file mancanti da {HF_BASE_REPO}...", flush=True)
+    print(f"[HuggingFace] Download parallelo ad alta velocita' (8 stream) di {len(missing)} file da {HF_BASE_REPO}...", flush=True)
     dl_tasks = []
     for fname in missing:
         url = f"https://huggingface.co/{HF_BASE_REPO}/resolve/main/{fname}"
@@ -142,7 +152,7 @@ def ensure_rizzo_flow_from_hf():
             else:
                 raise
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(_task, it) for it in dl_tasks]
         concurrent.futures.wait(futures)
 
@@ -166,7 +176,7 @@ def patch_modeling_spark(py_path: str):
 
 
 if __name__ == "__main__":
-    print("=== Verifica e Download Modelli Spark-Decide (Veloce) ===", flush=True)
+    print(f"=== Setup e Download Modelli Spark-Decide (Cartella: {ROOT_DIR}) ===", flush=True)
     ensure_spark_decide_from_github()
     ensure_rizzo_flow_from_hf()
     patch_modeling_spark(os.path.join(BASE_DIR, "modeling_spark.py"))

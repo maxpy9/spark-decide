@@ -2,9 +2,10 @@ import os, shutil, json, time, numpy as np, torch, torch.nn as nn, torch.nn.func
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
-SAVED = "models/spark-decide"
-BASE_ID = "models/rizzo-flow"
-MERGED_DIR = "models/spark-decide-merged"
+ROOT_DIR = os.environ.get("SPARK_ROOT_DIR", ".")
+SAVED = os.path.join(ROOT_DIR, "models", "spark-decide")
+BASE_ID = os.path.join(ROOT_DIR, "models", "rizzo-flow")
+MERGED_DIR = os.path.join(ROOT_DIR, "models", "spark-decide-merged")
 MAXLEN = 2048
 if torch.cuda.is_available():
     DEV = "cuda"; DT = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16

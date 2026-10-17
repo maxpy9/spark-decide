@@ -103,12 +103,20 @@ Il server integra **Spark-Decide Studio** (`http://127.0.0.1:7860`), una dashboa
 
 Nella cartella del progetto è disponibile il launcher nativo per Windows con interfaccia grafica:
 
-### 1. Avvio con Launcher Grafico ([`SparkDecide_Setup.exe`](SparkDecide_Setup.exe))
-Fai doppio clic su **`SparkDecide_Setup.exe`**. Troverai 3 pulsanti dedicati:
-- **`📦 Installa tutto`**: verifica l'ambiente Python, installa le librerie mancanti e scarica i pesi di Spark-Decide da GitHub e di Rizzo Flow da HuggingFace in pochi secondi con download multi-thread.
-- **`▶ Esegui server`**: carica il modello in memoria GPU e avvia il server su `http://127.0.0.1:7860`, abilitando anche il tunnel sicuro per l'accesso da smartphone.
-- **`⏹ Stoppa il server`**: ferma istantaneamente il server e libera la memoria GPU.
-- **`🌐 Apri Studio`**: apre l'interfaccia nel browser.
+### 1. Download & Avvio con Launcher Grafico ([`SparkDecide_Setup.exe`](SparkDecide_Setup.exe))
+
+Puoi scaricare direttamente **[`SparkDecide_Setup.exe`](https://github.com/maxpy9/spark-decide/raw/main/SparkDecide_Setup.exe)** oppure avviare il downloader automatico 1-click da PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/maxpy9/spark-decide/main/Download_SparkDecide.ps1 | iex
+```
+
+All'apertura dell'eseguibile troverai un'interfaccia scura moderna e intuitiva:
+- **`📂 Cartella di Installazione`**: visualizza il percorso di destinazione e lo **spazio libero su disco** in tempo reale, con il pulsante **`📁 Sfoglia...`** per salvare modelli ed ambiente su qualsiasi partizione (es. `D:\SparkDecide`).
+- **`📦 Installa tutto`**: prima del download **ti chiede dove desideri installare**, quindi procede con il download parallelo a 8 stream da HuggingFace e GitHub e la verifica immediata delle librerie.
+- **`▶ Esegui server`**: carica il modello neurale e avvia il server su `http://127.0.0.1:7860`, generando anche l'URL sicuro Cloudflare per il controllo da smartphone.
+- **`⏹ Stoppa il server`**: ferma istantaneamente il server e rilascia la memoria GPU.
+- **`🌐 Apri Studio`**: apre la dashboard interattiva nel browser.
 
 ---
 
@@ -256,11 +264,13 @@ Le prestazioni sono misurate direttamente in inferenza neurale:
 
 ```
 spark-decide/
-├── SparkDecide_Setup.exe    # Installer & Launcher nativo Windows (GUI 3 pulsanti)
+├── SparkDecide_Setup.exe    # Installer & Launcher nativo Windows (GUI 3 pulsanti + selettore cartella)
 ├── SparkDecideLauncher.cs   # Sorgente C# del launcher compilabile con csc.exe
+├── Download_SparkDecide.ps1 # Script PowerShell 1-Click con selettore cartella grafico
+├── Scarica_SparkDecide.bat  # Avviatore rapido batch per Windows
 ├── spark_decide.py          # Core engine Spark-Decide (decide e decide_fast)
 ├── snake_playground.py      # Server FastAPI + Spark-Decide Studio (Builder, Snake, Bench)
-├── setup_models.py          # Script download multi-thread (GitHub + HuggingFace)
+├── setup_models.py          # Script download parallelo a 8 stream (GitHub + HuggingFace)
 ├── snake_env.py             # Simulatore logico Snake e sensori spaziali
 ├── benchmark.py             # Suite di benchmark multi-agente
 ├── spark_decide_logo.png    # Mascotte ufficiale del progetto
