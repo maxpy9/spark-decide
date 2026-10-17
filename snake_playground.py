@@ -2006,9 +2006,12 @@ async function singleStepSnake(autoReset = false) {
   const t0 = performance.now();
   const base = getServerUrl();
   try {
-    const mode = document.getElementById('sel-snake-mode').value;
-    const gr = document.getElementById('chk-snake-gr').checked;
-    const turbo = document.getElementById('chk-turbo-snake').checked;
+    const modeEl = document.getElementById('sel-snake-mode');
+    const mode = modeEl ? modeEl.value : 'sensors_and_grid';
+    const grEl = document.getElementById('chk-snake-gr');
+    const gr = grEl ? grEl.checked : true;
+    const turboEl = document.getElementById('chk-turbo-snake');
+    const turbo = turboEl ? turboEl.checked : false;
     const resp = await fetch((base || '') + '/api/snake/step', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2021,8 +2024,9 @@ async function singleStepSnake(autoReset = false) {
     checkServerConnection(true);
     return data;
   } catch (err) {
+    console.error('singleStepSnake error:', err);
     document.getElementById('sn-status-title').innerText = 'Server non raggiungibile';
-    document.getElementById('sn-status-sub').innerText = 'Avvia il server sul PC e configura l\'URL in alto';
+    document.getElementById('sn-status-sub').innerText = (err && err.message) ? err.message : 'Avvia il server sul PC e configura l\'URL in alto';
     return null;
   } finally {
     snakeBusy = false;
