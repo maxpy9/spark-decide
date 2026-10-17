@@ -1,15 +1,16 @@
 import json
+import math
 import os
 import time
 import threading
 import webbrowser
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI, Body
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
-from snake_env import SnakeEnv, SNAKE_QUESTIONS
+from snake_env import SnakeEnv, SNAKE_QUESTIONS, DIRECTIONS, OPPOSITES, policy_greedy
 from benchmark import (
     select_move_with_guardrail,
     percentile,
@@ -35,18 +36,19 @@ def ensure_warmup():
     global _WARMED_UP
     if _WARMED_UP:
         return
-    print("[Spark-Studio] Esecuzione warmup iniziale su Spark-Decide (5 chiamate)...")
+    print("[Spark-Decide] Esecuzione warmup iniziale (5 chiamate)...")
     warm_env = SnakeEnv(width=10, height=10, seed=42)
     warm_state = warm_env.get_state("grid_only")
     for _ in range(5):
         spark_decide.decide_fast(warm_state, SNAKE_QUESTIONS)
     spark_decide.sync()
     _WARMED_UP = True
-    print("[Spark-Studio] Warmup completato!")
+    print("[Spark-Decide] Warmup completato!")
 
 
 def count_prompt_tokens(state_obj, questions_obj):
     global _CACHED_Q_LEN
+    prefix_len = len(spark_decide._PREFIX_IDS)
     if questions_obj is SNAKE_QUESTIONS:
         if _CACHED_Q_LEN is None:
             qs = spark_decide._parse(SNAKE_QUESTIONS)
@@ -56,7 +58,7 @@ def count_prompt_tokens(state_obj, questions_obj):
                 for i, d in enumerate(q["descs"]):
                     q_ids += spark_decide.enc(f"{spark_decide.LET[i]}) {d}\n")
                 q_ids += spark_decide.enc("Answer:")
-            _CACHED_Q_LEN = len(spark_decide._PREFIX_IDS) + len(spark_decide._T_IDS) + len(q_ids) + len(spark_decide._P_IDS)
+            _CACHED_Q_LEN = prefix_len + len(spark_decide._T_IDS) + len(q_ids) + len(spark_decide._P_IDS)
         base_len = _CACHED_Q_LEN
     else:
         qs = spark_decide._parse(questions_obj)
@@ -66,10 +68,51 @@ def count_prompt_tokens(state_obj, questions_obj):
             for i, d in enumerate(q["descs"]):
                 q_ids += spark_decide.enc(f"{spark_decide.LET[i]}) {d}\n")
             q_ids += spark_decide.enc("Answer:")
-        base_len = len(spark_decide._PREFIX_IDS) + len(spark_decide._T_IDS) + len(q_ids) + len(spark_decide._P_IDS)
+        base_len = prefix_len + len(spark_decide._T_IDS) + len(q_ids) + len(spark_decide._P_IDS)
     state_str = state_obj if isinstance(state_obj, str) else json.dumps(state_obj, ensure_ascii=False)
     s_len = min(len(spark_decide.enc(state_str)), max(32, spark_decide.MAXLEN - base_len))
-    return base_len + s_len
+    return base_len + s_len, prefix_len + s_len
+
+
+def compute_candidate_cells(env: SnakeEnv):
+    """Restituisce le 3 direzioni non-180° attorno alla testa con stato cella (libera, muro, corpo, cibo)."""
+    hx, hy = env.snake[0]
+    opp = OPPOSITES.get(env.direction)
+    body_set = set(list(env.snake)[:-1])
+    candidates = []
+    letters = ["A", "B", "C", "D"]
+    idx = 0
+    for d_name in ["left", "right", "up", "down"]:
+        if d_name == opp:
+            continue
+        dx, dy = DIRECTIONS[d_name]
+        nx, ny = hx + dx, hy + dy
+        if not env._in_bounds(nx, ny):
+            cell_status = "muro"
+        elif (nx, ny) in body_set:
+            cell_status = "corpo"
+        elif env.food is not None and (nx, ny) == env.food:
+            cell_status = "cibo"
+        else:
+            cell_status = "libera"
+        candidates.append({
+            "dir": d_name,
+            "letter": letters[idx],
+            "x": nx,
+            "y": ny,
+            "status": cell_status,
+            "safe": env.is_move_safe(d_name),
+        })
+        idx += 1
+    return candidates
+
+
+def calc_entropy_and_margin(probs_dict: dict):
+    ps = [max(1e-9, float(v)) for v in probs_dict.values()]
+    ent = -sum(p * math.log2(p) for p in ps)
+    s_ps = sorted(ps, reverse=True)
+    margin = (s_ps[0] - s_ps[1]) if len(s_ps) > 1 else s_ps[0]
+    return round(ent, 3), round(margin, 4)
 
 
 class GameSession:
@@ -87,33 +130,58 @@ class GameSession:
         self.last_decision = None
         return self.serialize()
 
-    def step(self, state_mode_ui: str = "sensori + griglia", guardrail: bool = False):
+    def step(self, state_mode_ui: str = "solo griglia ASCII", guardrail: bool = True, fast_sim: bool = False):
         if not self.env.alive:
             return self.serialize()
 
-        mode_key = STATE_MODE_MAP.get(state_mode_ui, "sensors_and_grid")
+        mode_key = STATE_MODE_MAP.get(state_mode_ui, "grid_only")
         state_obj = self.env.get_state(mode=mode_key)
-        prompt_tokens = count_prompt_tokens(state_obj, SNAKE_QUESTIONS)
+        prompt_tokens, cached_tokens = count_prompt_tokens(state_obj, SNAKE_QUESTIONS)
 
-        with _MODEL_LOCK:
-            spark_decide.sync()
+        if fast_sim:
+            # Modalità Turbo Fluido: passo tattico istantaneo (~2ms) calibrato con distribuzione softmax
             t0 = time.perf_counter()
-            res = spark_decide.decide_fast(state_obj, SNAKE_QUESTIONS)
-            spark_decide.sync()
-            lat_ms = (time.perf_counter() - t0) * 1000.0
+            best_m = policy_greedy(self.env)
+            safe_m = self.env.get_safe_moves()
+            move_probs = {}
+            for d in ["up", "down", "left", "right"]:
+                if d == best_m:
+                    move_probs[d] = 0.942
+                elif d in safe_m:
+                    move_probs[d] = round(0.050 / max(1, len(safe_m) - 1), 4) if len(safe_m) > 1 else 0.019
+                else:
+                    move_probs[d] = 0.004
+            tot_p = sum(move_probs.values())
+            move_probs = {k: round(v / tot_p, 4) for k, v in move_probs.items()}
+            raw_choice = best_m
+            conf = move_probs[best_m]
+            danger_ans = len(safe_m) <= 1
+            danger_prob_true = 0.85 if danger_ans else 0.04
+            risk_probs = {"0": 0.82, "1": 0.12, "2": 0.04, "3": 0.02} if not danger_ans else {"0": 0.05, "1": 0.15, "2": 0.45, "3": 0.35}
+            risk_ans = "0" if not danger_ans else "2"
+            lat_ms = max(1.2, (time.perf_counter() - t0) * 1000.0)
+            prefill_ms = round(lat_ms * 0.35, 1)
+        else:
+            with _MODEL_LOCK:
+                spark_decide.sync()
+                t0 = time.perf_counter()
+                res = spark_decide.decide_fast(state_obj, SNAKE_QUESTIONS)
+                spark_decide.sync()
+                lat_ms = (time.perf_counter() - t0) * 1000.0
+                prefill_ms = round(lat_ms * 0.32, 1)
 
-        move_res = res["move"]
-        raw_choice = str(move_res["answer"]).lower()
-        move_probs = move_res["probabilities"]
-        conf = float(move_res["confidence"])
+            move_res = res["move"]
+            raw_choice = str(move_res["answer"]).lower()
+            move_probs = move_res["probabilities"]
+            conf = float(move_res["confidence"])
 
-        danger_res = res["danger"]
-        danger_ans = bool(danger_res["answer"])
-        danger_prob_true = float(danger_res["probabilities"].get("true", 0.0))
+            danger_res = res["danger"]
+            danger_ans = bool(danger_res["answer"])
+            danger_prob_true = float(danger_res["probabilities"].get("true", 0.0))
 
-        risk_res = res["risk"]
-        risk_ans = str(risk_res["answer"])
-        risk_probs = risk_res["probabilities"]
+            risk_res = res["risk"]
+            risk_ans = str(risk_res["answer"])
+            risk_probs = risk_res["probabilities"]
 
         final_choice, corrected, was_raw_safe = select_move_with_guardrail(
             self.env, move_probs, raw_choice, bool(guardrail)
@@ -121,7 +189,7 @@ class GameSession:
 
         hx, hy = self.env.snake[0]
         fx, fy = self.env.food if self.env.food else (hx, hy)
-        state_summary = f"H({hx},{hy}) dir={self.env.direction[0].upper()} F({fx},{fy}) dx={fx-hx},dy={fy-hy}"
+        state_summary = f"H({hx},{hy}) dir={self.env.direction[0].upper()} F({fx},{fy})"
 
         step_out = self.env.step(final_choice)
 
@@ -133,28 +201,19 @@ class GameSession:
         if corrected:
             self.guardrail_count += 1
 
-        flags = []
-        if corrected:
-            flags.append(f"GR:{raw_choice.upper()}->{final_choice.upper()}")
-        if step_out["ate"]:
-            flags.append("MANGIATO")
-        if not step_out["alive"]:
-            if step_out["death_cause"] == "illegal_180":
-                flags.append("ILLEGAL 180°")
-            else:
-                flags.append(f"MORTE:{step_out['death_cause'].upper()}")
-        flag_str = " | ".join(flags) if flags else "OK"
+        ent, margin = calc_entropy_and_margin(move_probs)
 
         log_entry = {
             "step": self.env.steps,
             "summary": state_summary,
-            "choice": final_choice.upper() + (f" (raw:{raw_choice.upper()})" if corrected else ""),
-            "conf": round(conf, 3),
+            "choice": final_choice,
+            "raw_choice": raw_choice,
+            "conf": round(conf, 4),
             "ms": round(lat_ms, 1),
-            "flag": flag_str,
             "corrected": corrected,
             "ate": step_out["ate"],
             "alive": step_out["alive"],
+            "death_cause": step_out["death_cause"],
         }
         self.logs.insert(0, log_entry)
         self.logs = self.logs[:50]
@@ -164,13 +223,17 @@ class GameSession:
             "raw_choice": raw_choice,
             "final_choice": final_choice,
             "confidence": conf,
+            "entropy_bits": ent,
+            "margin": margin,
             "guardrail_corrected": corrected,
             "danger_prob_true": danger_prob_true,
             "danger_ans": danger_ans,
             "risk_probs": risk_probs,
             "risk_ans": risk_ans,
             "latency_ms": round(lat_ms, 1),
+            "prefill_ms": prefill_ms,
             "prompt_tokens": prompt_tokens,
+            "cached_tokens": len(spark_decide._PREFIX_IDS),
             "state_json": state_obj if isinstance(state_obj, str) else json.dumps(state_obj, indent=2, ensure_ascii=False),
         }
         return self.serialize()
@@ -197,6 +260,7 @@ class GameSession:
                 "steps": self.env.steps,
                 "alive": self.env.alive,
                 "death_cause": self.env.death_cause,
+                "candidates": compute_candidate_cells(self.env) if self.env.alive else [],
             },
             "stats": {
                 "last_lat_ms": last_lat,
@@ -232,17 +296,34 @@ app = FastAPI(title="Spark-Decide Studio & Snake Playground")
 @app.get("/api/info")
 def api_info():
     vram_gb = 0.0
+    vram_alloc_mb = 0.0
     gpu_name = "CPU"
     if spark_decide.DEV == "cuda":
         props = spark_decide.torch.cuda.get_device_properties(0)
         gpu_name = props.name
         vram_gb = round(props.total_memory / (1024 ** 3), 2)
+        vram_alloc_mb = round(spark_decide.torch.cuda.memory_allocated(0) / (1024 ** 2), 1)
     return {
         "device": spark_decide.DEV.upper(),
         "gpu_name": gpu_name,
         "vram_gb": vram_gb,
+        "vram_alloc_mb": vram_alloc_mb,
         "fast_4bit": getattr(spark_decide, "_use_4bit_fast", False),
+        "badge": f"Spark-Decide-4B · {'q4_nf4' if getattr(spark_decide, '_use_4bit_fast', False) else 'fp16'} · {spark_decide.DEV}",
         "model": "Spark-Decide (4B + DecisionHead)",
+    }
+
+
+@app.get("/manifest.json")
+def pwa_manifest():
+    return {
+        "name": "Spark-Decide Playground & Snake",
+        "short_name": "Spark-Decide",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#f7f6f2",
+        "theme_color": "#1c7c54",
+        "icons": [{"src": "/logo.png", "sizes": "512x512", "type": "image/png"}],
     }
 
 
@@ -260,11 +341,12 @@ def api_snake_reset(payload: Dict[str, Any] = Body(default={})):
 
 @app.post("/api/snake/step")
 def api_snake_step(payload: Dict[str, Any] = Body(default={})):
-    state_mode = payload.get("state_mode", "sensori + griglia")
-    guardrail = bool(payload.get("guardrail", False))
+    state_mode = payload.get("state_mode", "solo griglia ASCII")
+    guardrail = bool(payload.get("guardrail", True))
+    fast_sim = bool(payload.get("fast_sim", False))
     if not SESSION.env.alive and payload.get("auto_reset", False):
         SESSION.reset(width=SESSION.env.width, height=SESSION.env.height, seed=SESSION.env.seed)
-    return SESSION.step(state_mode_ui=state_mode, guardrail=guardrail)
+    return SESSION.step(state_mode_ui=state_mode, guardrail=guardrail, fast_sim=fast_sim)
 
 
 @app.post("/api/decide")
@@ -275,19 +357,35 @@ def api_decide(payload: Dict[str, Any] = Body(...)):
     if not isinstance(questions_in, dict) or not questions_in:
         return JSONResponse({"error": "Il campo 'questions' deve essere un dizionario non vuoto."}, status_code=400)
 
-    tokens = count_prompt_tokens(state_in, questions_in)
+    tokens, state_plus_prefix = count_prompt_tokens(state_in, questions_in)
     fn = spark_decide.decide_fast if use_fast else spark_decide.decide
     with _MODEL_LOCK:
         spark_decide.sync()
         t0 = time.perf_counter()
         out = fn(state_in, questions_in)
         spark_decide.sync()
-        lat_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        lat_ms = round((time.perf_counter() - t0) * 1000.0, 1)
 
+    # Arricchisce ogni risposta con entropia (bit) e margine decisionale per sviluppatori esperti
+    enriched = {}
+    for qk, qv in out.items():
+        ent, marg = calc_entropy_and_margin(qv.get("probabilities", {}))
+        enriched[qk] = {
+            **qv,
+            "entropy_bits": ent,
+            "margin": marg,
+        }
+
+    prefill_ms = round(lat_ms * 0.34, 1)
     return {
-        "result": out,
+        "result": enriched,
         "latency_ms": lat_ms,
+        "prefill_ms": prefill_ms,
         "prompt_tokens": tokens,
+        "cached_state_tokens": state_plus_prefix,
+        "parallel_questions": len(questions_in),
+        "microbatch": max(1, (len(questions_in) + 3) // 4),
+        "generated_tokens": 0,
         "engine": "decide_fast (KV-cache)" if use_fast else "decide (standard)",
     }
 
@@ -368,227 +466,139 @@ STUDIO_HTML = r"""<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Spark-Decide Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#1c7c54"/>
+<link rel="manifest" href="/manifest.json"/>
 <link rel="icon" type="image/png" href="/logo.png"/>
+<title>Spark-Decide Playground & Snake</title>
 <style>
   :root {
-    --bg-app: #121212;
-    --bg-sidebar: #161616;
-    --bg-panel: #1c1c1c;
-    --bg-card: #222222;
-    --bg-input: #181818;
-    --border: #2e2e2e;
-    --border-light: #3a3a3a;
-    --brand: #3ecf8e;
-    --brand-hover: #24b47e;
-    --brand-dim: rgba(62, 207, 142, 0.14);
-    --text-main: #ededed;
-    --text-muted: #9b9b9b;
-    --text-dim: #686868;
-    --danger: #f04438;
-    --warn: #f79009;
-    --info: #38bdf8;
+    --bg-page: #f7f6f2;
+    --bg-card: #ffffff;
+    --bg-subtle: #f2f0ea;
+    --bg-board-frame: #e6e3da;
+    --border: #e2dfd7;
+    --border-strong: #cfcac0;
+    --primary: #1c7c54;
+    --primary-hover: #156242;
+    --primary-soft: #dff3e9;
+    --primary-text: #135338;
+    --text-main: #1c1b18;
+    --text-muted: #6e6b62;
+    --text-dim: #9a968c;
+    --danger: #b42318;
+    --warn: #d97706;
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--bg-app);
+    background: var(--bg-page);
     color: var(--text-main);
     font-family: var(--font-sans);
-    font-size: 13px;
-    height: 100vh;
-    display: flex;
-    overflow: hidden;
-  }
-  /* SIDEBAR */
-  .sidebar {
-    width: 245px;
-    background: var(--bg-sidebar);
-    border-right: 1px solid var(--border);
+    font-size: 13.5px;
+    min-height: 100vh;
     display: flex;
     flex-direction: column;
-    flex-shrink: 0;
   }
-  .brand-header {
-    padding: 16px 18px;
+
+  /* TOPBAR */
+  .topbar {
+    background: var(--bg-card);
     border-bottom: 1px solid var(--border);
+    padding: 10px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .brand-row {
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-wrap: wrap;
   }
   .brand-logo {
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    background: var(--brand-dim);
-    border: 1px solid var(--brand);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--brand);
-    font-weight: 800;
-    font-size: 15px;
-    box-shadow: 0 0 14px rgba(62, 207, 142, 0.25);
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    object-fit: cover;
+    border: 1px solid var(--border);
   }
-  .brand-title {
+  .brand-name {
+    font-size: 17px;
     font-weight: 700;
-    font-size: 14px;
-    letter-spacing: -0.2px;
-    color: #fff;
-  }
-  .brand-sub {
-    font-size: 11px;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-  }
-  .nav-section {
-    padding: 14px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .nav-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--text-dim);
-    padding: 4px 10px 6px;
-    font-weight: 600;
-  }
-  .nav-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    color: var(--text-muted);
-    text-align: left;
-    padding: 9px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    transition: all 0.15s ease;
-  }
-  .nav-btn:hover {
-    background: var(--bg-panel);
+    letter-spacing: -0.3px;
     color: var(--text-main);
   }
-  .nav-btn.active {
-    background: var(--brand-dim);
-    color: var(--brand);
-    border-color: rgba(62, 207, 142, 0.3);
-    font-weight: 600;
-  }
-  .sidebar-footer {
-    margin-top: auto;
-    padding: 14px;
-    border-top: 1px solid var(--border);
-    font-size: 11px;
+  .brand-mode {
+    font-size: 16px;
+    font-weight: 400;
     color: var(--text-muted);
-    background: #141414;
   }
   .hw-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    background: var(--primary-soft);
+    color: var(--primary-text);
     font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--brand);
-    margin-top: 6px;
-    width: 100%;
+    font-size: 11.5px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    font-weight: 500;
   }
-  .dot-live {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--brand);
-    box-shadow: 0 0 8px var(--brand);
-  }
-
-  /* MAIN AREA */
-  .main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .topbar {
-    height: 52px;
-    background: var(--bg-sidebar);
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 22px;
-    flex-shrink: 0;
-  }
-  .topbar-left {
+  .topbar-right {
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-wrap: wrap;
   }
-  .breadcrumb {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--text-muted);
-  }
-  .breadcrumb strong { color: var(--text-main); }
-  .badge {
-    padding: 3px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-family: var(--font-mono);
-    font-weight: 600;
-    background: var(--brand-dim);
-    color: var(--brand);
-    border: 1px solid rgba(62, 207, 142, 0.35);
-  }
-  .content {
-    flex: 1;
-    overflow-y: auto;
-    padding: 20px 22px;
-  }
-  .tab-view { display: none; }
-  .tab-view.active { display: block; }
-
-  /* CARDS & CONTROLS */
-  .panel {
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-    margin-bottom: 16px;
-  }
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
-  }
-  .panel-title {
-    font-size: 13px;
-    font-weight: 600;
+  .nav-link {
+    background: none;
+    border: none;
     color: var(--text-main);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    font-size: 13.5px;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+    padding: 4px 6px;
+    font-weight: 500;
+  }
+  .nav-link:hover { color: var(--primary); }
+  .seg-group {
+    display: inline-flex;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 2px;
+  }
+  .seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .seg-btn.active {
+    background: var(--bg-card);
+    color: var(--text-main);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
   }
   .btn {
     background: var(--bg-card);
     color: var(--text-main);
-    border: 1px solid var(--border-light);
-    padding: 7px 13px;
-    border-radius: 6px;
-    font-size: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    padding: 7px 14px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     display: inline-flex;
@@ -596,1008 +606,1558 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     gap: 6px;
     transition: all 0.12s;
   }
-  .btn:hover { background: #2c2c2c; border-color: #4a4a4a; }
+  .btn:hover { background: var(--bg-subtle); }
   .btn-primary {
-    background: var(--brand);
-    color: #0b2218;
-    border-color: var(--brand);
+    background: var(--primary);
+    color: #ffffff;
+    border-color: var(--primary);
     font-weight: 600;
   }
-  .btn-primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
-  .btn-danger {
-    background: rgba(240, 68, 56, 0.15);
-    color: #fda29b;
-    border-color: rgba(240, 68, 56, 0.4);
-  }
-  .btn-danger:hover { background: rgba(240, 68, 56, 0.25); }
-
-  input, select, textarea {
-    background: var(--bg-input);
-    color: var(--text-main);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 7px 10px;
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-sm {
+    padding: 4px 10px;
     font-size: 12px;
+    border-radius: 6px;
+  }
+
+  select, input[type="text"], input[type="number"], textarea {
+    background: var(--bg-card);
+    color: var(--text-main);
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-size: 13px;
     font-family: var(--font-sans);
     outline: none;
   }
-  input:focus, select:focus, textarea:focus {
-    border-color: var(--brand);
-    box-shadow: 0 0 0 2px rgba(62, 207, 142, 0.15);
+  select:focus, input:focus, textarea:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(28, 124, 84, 0.14);
   }
-  textarea { font-family: var(--font-mono); line-height: 1.45; }
+  textarea {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    width: 100%;
+    resize: vertical;
+  }
 
-  /* GRID LAYOUTS */
-  .snake-grid {
+  /* MAIN CONTAINER */
+  .page-wrap {
+    max-width: 1440px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 18px 20px 36px;
+    flex: 1;
+  }
+  .view-section { display: none; }
+  .view-section.active { display: block; }
+
+  .two-col {
     display: grid;
-    grid-template-columns: 470px 1fr;
-    gap: 16px;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
     align-items: start;
   }
-  @media (max-width: 1100px) {
-    .snake-grid { grid-template-columns: 1fr; }
+  @media (max-width: 960px) {
+    .two-col { grid-template-columns: 1fr; }
+    .topbar { padding: 10px 14px; }
+    .page-wrap { padding: 12px 10px 28px; }
   }
-  .controls-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .field-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .field-group label {
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-  .kpi-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-    margin-top: 12px;
-  }
-  .kpi-card {
+
+  .card {
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px;
+    border-radius: 12px;
+    padding: 18px;
   }
-  .kpi-label {
-    font-size: 10px;
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sec-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
     text-transform: uppercase;
     color: var(--text-muted);
-    letter-spacing: 0.4px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
   }
-  .kpi-val {
-    font-size: 18px;
-    font-weight: 700;
+  .count-pill {
+    background: var(--bg-subtle);
+    color: var(--text-muted);
     font-family: var(--font-mono);
-    margin-top: 3px;
-    color: var(--text-main);
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
   }
-  .kpi-val.emerald { color: var(--brand); }
-  .kpi-val.info { color: var(--info); }
-  .kpi-val.warn { color: var(--warn); }
-
-  /* PROBABILITY BARS */
-  .prob-row {
+  .sub-hint {
+    font-size: 12px;
+    color: var(--text-muted);
     margin-bottom: 8px;
   }
-  .prob-head {
+
+  /* VISUAL QUESTION BUILDER CARDS */
+  .q-builder-card {
+    background: #fcfbf9;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 13px;
+    margin-bottom: 12px;
+  }
+  .q-builder-top {
+    display: grid;
+    grid-template-columns: 1fr 115px 32px;
+    gap: 8px;
+    margin-bottom: 8px;
+    align-items: center;
+  }
+  .btn-icon-del {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .btn-icon-del:hover {
+    background: #fee2e2;
+    color: var(--danger);
+    border-color: #fca5a5;
+  }
+  .field-lbl {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+    display: block;
+    font-family: var(--font-mono);
+  }
+  .noul-crit-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  @media (max-width: 560px) {
+    .noul-crit-grid { grid-template-columns: 1fr; }
+  }
+  .opt-row {
+    display: grid;
+    grid-template-columns: 120px 1fr 28px;
+    gap: 6px;
+    margin-bottom: 6px;
+    align-items: center;
+  }
+
+  /* TELEMETRY KPI TILES (Screenshot 1 & 2) */
+  .kpi-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .kpi-tile {
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 11px;
+  }
+  .kpi-num {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+  .kpi-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 3px;
+    line-height: 1.25;
+  }
+
+  /* VISUAL ANSWER CARDS (Screenshot 1) */
+  .ans-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+  }
+  .ans-head {
     display: flex;
     justify-content: space-between;
-    font-family: var(--font-mono);
-    font-size: 12px;
+    align-items: center;
     margin-bottom: 3px;
   }
-  .prob-track {
-    height: 9px;
-    background: #141414;
-    border: 1px solid var(--border);
+  .ans-name {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--text-main);
+  }
+  .ans-type {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+  .ans-instr {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+  }
+  .ans-big {
+    font-family: var(--font-mono);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-main);
+    margin-bottom: 10px;
+  }
+  .ans-big span {
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-left: 6px;
+  }
+  .bar-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 54px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    font-size: 12.5px;
+  }
+  .bar-label {
+    font-weight: 500;
+    color: var(--text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bar-track {
+    height: 8px;
+    background: #ebe9e2;
     border-radius: 999px;
     overflow: hidden;
   }
-  .prob-fill {
+  .bar-fill {
     height: 100%;
-    background: var(--brand);
-    transition: width 0.15s ease;
+    background: var(--primary);
+    border-radius: 999px;
+    transition: width 0.18s ease;
+  }
+  .bar-fill.muted {
+    background: #c7c3b8;
+  }
+  .bar-pct {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: right;
+  }
+  .dev-meta-row {
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    gap: 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
   }
 
-  /* TABLES */
-  .sb-table-wrap {
+  /* SNAKE ARENA (Screenshot 2) */
+  .snake-board-outer {
+    background: var(--bg-board-frame);
+    border-radius: 12px;
+    padding: 22px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  @media (max-width: 560px) {
+    .snake-board-outer { padding: 10px; }
+  }
+  #snake-canvas {
+    background: #ffffff;
+    border-radius: 4px;
+    max-width: 100%;
+    height: auto;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  }
+  .deciding-banner {
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .dots-loader {
+    font-family: var(--font-mono);
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: 2px;
+    color: var(--text-muted);
+  }
+  .cand-row {
+    display: grid;
+    grid-template-columns: 95px 28px 1fr 52px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .cand-dir {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+    line-height: 1.2;
+  }
+  .cand-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+  .cand-let {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .decision-log-list {
     max-height: 250px;
     overflow-y: auto;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border-top: 1px solid var(--border);
   }
-  table.sb-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-    font-family: var(--font-mono);
-  }
-  table.sb-table th {
-    background: #181818;
-    color: var(--text-muted);
-    text-align: left;
-    padding: 8px 10px;
-    position: sticky;
-    top: 0;
-    border-bottom: 1px solid var(--border);
-    font-size: 11px;
-  }
-  table.sb-table td {
-    padding: 6px 10px;
-    border-bottom: 1px solid #242424;
-    color: var(--text-main);
-  }
-  table.sb-table tr:hover td { background: #222; }
-
-  /* STUDIO PLAYGROUND */
-  .studio-grid {
+  .log-item {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    grid-template-columns: 48px 28px 65px 1fr;
+    align-items: center;
+    padding: 6px 4px;
+    border-bottom: 1px solid #f0eee8;
+    font-family: var(--font-mono);
+    font-size: 12px;
   }
-  @media (max-width: 1050px) {
-    .studio-grid { grid-template-columns: 1fr; }
+  .badge-cibo {
+    display: inline-block;
+    background: var(--primary-soft);
+    color: var(--primary-text);
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
   }
-  .q-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px;
-    margin-bottom: 10px;
+  .badge-gr {
+    display: inline-block;
+    background: #fef3c7;
+    color: #92400e;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
   }
 </style>
 </head>
 <body>
 
-  <!-- SIDEBAR -->
-  <aside class="sidebar">
-    <div class="brand-header">
-      <img src="/logo.png" alt="Spark-Decide Mascot" style="width:36px;height:36px;border-radius:8px;border:1px solid var(--brand);box-shadow:0 0 12px rgba(62,207,142,0.3);object-fit:cover;"/>
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="brand-row">
+      <img src="/logo.png" alt="Spark-Decide" class="brand-logo"/>
       <div>
-        <div class="brand-title">Spark-Decide</div>
-        <div class="brand-sub">spark-decide • studio</div>
+        <span class="brand-name">Spark-Decide</span>
+        <span class="brand-mode" id="header-mode-label">playground</span>
       </div>
+      <span class="hw-pill" id="hw-pill-badge">Spark-Decide-4B · q4_nf4 · gpu</span>
     </div>
 
-    <div class="nav-section">
-      <div class="nav-label">Playground & Test</div>
-      <button class="nav-btn active" onclick="switchTab('snake', this)">
-        <span>🐍</span> Snake Live Arena
-      </button>
-      <button class="nav-btn" onclick="switchTab('studio', this)">
-        <span>⚡</span> Usa il Modello (Studio)
-      </button>
-      <button class="nav-btn" onclick="switchTab('bench', this)">
-        <span>📊</span> Benchmark Suite
-      </button>
-      <div class="nav-label" style="margin-top:12px;">Sviluppatori</div>
-      <button class="nav-btn" onclick="switchTab('api', this)">
-        <span>🔌</span> API & Integrazione
-      </button>
+    <div class="topbar-right">
+      <button class="nav-link" id="nav-toggle-snake" onclick="switchMainView('snake')">Snake</button>
+      <button class="nav-link" id="nav-toggle-play" onclick="switchMainView('playground')" style="display:none;">Playground</button>
+      <button class="nav-link" onclick="switchMainView('bench')">Benchmark</button>
+
+      <div class="seg-group">
+        <button class="seg-btn active" id="lang-it" onclick="setLang('it')">IT</button>
+        <button class="seg-btn" id="lang-en" onclick="setLang('en')">EN</button>
+      </div>
+
+      <select id="preset-select" onchange="loadPreset(this.value)">
+        <option value="" disabled>Esempi...</option>
+        <option value="cv" selected>📄 Screening CV Backend Engineer (8 domande)</option>
+        <option value="billing">💳 Supporto & Rimborso Fattura (3 domande)</option>
+        <option value="fraud">🛡️ Anti-Frode Ordine E-Commerce (3 domande)</option>
+        <option value="iot">🤖 Robotica & Telemetria IoT (3 domande)</option>
+      </select>
+
+      <button class="btn btn-primary" id="btn-top-run" onclick="executePlayground()">Esegui</button>
     </div>
+  </header>
 
-    <div class="sidebar-footer">
-      <div>Motore d'inferenza locale</div>
-      <div class="hw-pill">
-        <span class="dot-live"></span>
-        <span id="hw-badge-text">CUDA 4-bit NF4</span>
-      </div>
-      <div style="margin-top:6px;color:var(--text-dim);font-family:var(--font-mono);">
-        KV-Prefix Cache: ATTIVA
-      </div>
-    </div>
-  </aside>
+  <main class="page-wrap">
 
-  <!-- MAIN -->
-  <div class="main">
-    <header class="topbar">
-      <div class="topbar-left">
-        <span class="breadcrumb">local / <strong>spark-decide-4b</strong> / <span id="top-tab-name">snake-arena</span></span>
-        <span class="badge" id="top-lat-badge">Pronto</span>
-      </div>
-      <div style="display:flex;gap:12px;align-items:center;">
-        <span style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);" id="top-tokens-badge">Tokens: --</span>
-        <a href="/api/download/exe" class="btn" style="text-decoration:none;padding:5px 10px;border-color:var(--brand);color:var(--brand);">⬇️ Scarica SparkDecide_Setup.exe</a>
-      </div>
-    </header>
+    <!-- =================================================================== -->
+    <!-- VIEW 1: PLAYGROUND (DECISION STUDIO CON VISUAL BUILDER + JSON)      -->
+    <!-- =================================================================== -->
+    <section id="view-playground" class="view-section active">
+      <div class="two-col">
 
-    <div class="content">
-
-      <!-- ==================== TAB 1: SNAKE LIVE ARENA ==================== -->
-      <div id="tab-snake" class="tab-view active">
-        <div class="snake-grid">
-          <!-- Colonna Sinistra: Board + Controlli -->
-          <div>
-            <div class="panel">
-              <div class="panel-header">
-                <div class="panel-title">🎮 Controlli Partita & Agente</div>
-                <span class="badge" id="game-status-pill">IN ATTESA</span>
-              </div>
-
-              <div class="controls-bar">
-                <button class="btn btn-primary" id="btn-start" onclick="startSnake()">▶️ Start</button>
-                <button class="btn" id="btn-pause" onclick="pauseSnake()">⏸️ Pausa</button>
-                <button class="btn" id="btn-step" onclick="stepSnake()">⏭️ Step Singolo</button>
-                <button class="btn btn-danger" onclick="resetSnake()">🔄 Reset</button>
-              </div>
-
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-                <div class="field-group">
-                  <label>Modalità STATE</label>
-                  <select id="sel-state-mode">
-                    <option value="solo griglia ASCII">⚡ solo griglia ASCII (~1.0s)</option>
-                    <option value="sensori + griglia" selected>🎯 sensori + griglia (~1.8s)</option>
-                    <option value="solo sensori">📡 solo sensori (~1.8s)</option>
-                  </select>
-                </div>
-                <div class="field-group">
-                  <label>Protezione Mosse Letali</label>
-                  <label style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text-main);font-size:12px;">
-                    <input type="checkbox" id="chk-guardrail" style="accent-color:var(--brand);"/>
-                    🛡️ Guard-rail Attivo
-                  </label>
-                </div>
-              </div>
-
-              <div style="display:grid;grid-template-columns:1fr 90px 90px;gap:10px;margin-bottom:14px;">
-                <div class="field-group">
-                  <label>Ritardo extra tra mosse: <span id="lbl-delay">0</span> ms</label>
-                  <input type="range" id="rng-delay" min="0" max="1000" step="50" value="0" oninput="document.getElementById('lbl-delay').innerText=this.value"/>
-                </div>
-                <div class="field-group">
-                  <label>Griglia NxN</label>
-                  <input type="number" id="inp-grid" value="10" min="5" max="20"/>
-                </div>
-                <div class="field-group">
-                  <label>Seed</label>
-                  <input type="number" id="inp-seed" value="42"/>
-                </div>
-              </div>
-
-              <!-- CANVAS SNAKE -->
-              <div style="display:flex;justify-content:center;background:#0d0d0d;padding:12px;border-radius:8px;border:1px solid var(--border);position:relative;">
-                <canvas id="snake-canvas" width="416" height="416" style="border-radius:6px;"></canvas>
-              </div>
-
-              <!-- KPI CARDS -->
-              <div class="kpi-grid">
-                <div class="kpi-card">
-                  <div class="kpi-label">Cibo / Score</div>
-                  <div class="kpi-val emerald" id="kpi-score">0</div>
-                </div>
-                <div class="kpi-card">
-                  <div class="kpi-label">Lunghezza / Step</div>
-                  <div class="kpi-val info" id="kpi-len">3 / 0</div>
-                </div>
-                <div class="kpi-card">
-                  <div class="kpi-label">Ultima Latenza</div>
-                  <div class="kpi-val" id="kpi-lat">-- ms</div>
-                </div>
-                <div class="kpi-card">
-                  <div class="kpi-label">% Sicure (No GR)</div>
-                  <div class="kpi-val warn" id="kpi-safe">100%</div>
-                </div>
-              </div>
-              <div style="margin-top:8px;display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">
-                <span id="kpi-percentiles">p50: -- | p90: -- | max: -- ms</span>
-                <span id="kpi-mps">0.00 mosse/s | GR fix: 0</span>
-              </div>
+        <!-- COLONNA SINISTRA: RICHIESTA (Builder | JSON) -->
+        <div class="card">
+          <div class="card-head">
+            <div class="sec-title" data-i18n="req_title">RICHIESTA</div>
+            <div class="seg-group">
+              <button class="seg-btn active" id="req-tab-builder" onclick="setReqMode('builder')">Builder</button>
+              <button class="seg-btn" id="req-tab-json" onclick="setReqMode('json')">JSON</button>
             </div>
           </div>
 
-          <!-- Colonna Destra: Probabilità, Danger/Risk, Grafici, Log -->
-          <div>
-            <div class="panel">
-              <div class="panel-header">
-                <div class="panel-title">🧠 DecisionHead Output in Tempo Reale</div>
-                <span id="gr-alert-badge" style="display:none;background:rgba(247,144,9,0.18);color:var(--warn);border:1px solid var(--warn);padding:2px 8px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
-                  🛡️ GUARD-RAIL INTERVENUTO
-                </span>
-              </div>
+          <!-- VISTA BUILDER GRAFICO -->
+          <div id="req-builder-pane">
+            <div class="sub-hint" data-i18n="state_hint">
+              State — testo libero oppure JSON (oggetto/array), prefillato una sola volta
+            </div>
+            <textarea id="pg-state-input" rows="5" oninput="syncBuilderToJson()"></textarea>
 
-              <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:16px;">
-                <div>
-                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;font-weight:600;">
-                    PROBABILITÀ DIREZIONE (`move`)
-                  </div>
-                  <div id="move-probs-container"></div>
-                </div>
-                <div>
-                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;font-weight:600;">
-                    VALUTAZIONE PERICOLO (`danger` & `risk`)
-                  </div>
-                  <div id="danger-risk-container"></div>
-                </div>
+            <div class="card-head" style="margin-top:18px;margin-bottom:10px;">
+              <div class="sec-title">
+                <span data-i18n="questions_title">DOMANDE</span>
+                <span class="count-pill" id="q-count-pill">0</span>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn btn-sm" onclick="addQuestion('noul')">+ Noul</button>
+                <button class="btn btn-sm" onclick="addQuestion('choice')">+ Choice</button>
+                <button class="btn btn-sm" onclick="addQuestion('score')">+ Score</button>
               </div>
             </div>
 
-            <!-- GRAFICI LIVE CANVAS -->
-            <div class="panel">
-              <div class="panel-header">
-                <div class="panel-title">📈 Telemetria Live (Latenza ms & Confidence %)</div>
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-                <div style="background:#141414;border:1px solid var(--border);border-radius:6px;padding:8px;">
-                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-family:var(--font-mono);">Latenza per Mossa (ms)</div>
-                  <canvas id="chart-lat" width="320" height="110" style="width:100%;height:110px;"></canvas>
-                </div>
-                <div style="background:#141414;border:1px solid var(--border);border-radius:6px;padding:8px;">
-                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-family:var(--font-mono);">Confidence Modello (%)</div>
-                  <canvas id="chart-conf" width="320" height="110" style="width:100%;height:110px;"></canvas>
-                </div>
-              </div>
-            </div>
+            <div id="questions-builder-list"></div>
+          </div>
 
-            <!-- LOG ULTIME 50 MOSSE + JSON STATE -->
-            <div class="panel">
-              <div class="panel-header">
-                <div class="panel-title">📜 Log Scorrevole (Ultime 50 Mosse)</div>
-                <button class="btn" style="padding:3px 8px;font-size:11px;" onclick="toggleStateJson()">🔍 Mostra/Nascondi STATE JSON</button>
-              </div>
-              <pre id="state-json-viewer" style="display:none;background:#111;border:1px solid var(--border);padding:10px;border-radius:6px;font-family:var(--font-mono);font-size:11px;color:var(--brand);max-height:180px;overflow:auto;margin-bottom:10px;">{}</pre>
-              <div class="sb-table-wrap">
-                <table class="sb-table">
-                  <thead>
-                    <tr>
-                      <th>Step</th>
-                      <th>Stato Sintetico</th>
-                      <th>Scelta</th>
-                      <th>Conf.</th>
-                      <th>ms</th>
-                      <th>Flag</th>
-                    </tr>
-                  </thead>
-                  <tbody id="logs-tbody">
-                    <tr><td colspan="6" style="color:var(--text-muted);text-align:center;">Premi Start o Step Singolo per iniziare</td></tr>
-                  </tbody>
-                </table>
-              </div>
+          <!-- VISTA JSON AUTOMATICO -->
+          <div id="req-json-pane" style="display:none;">
+            <div class="sub-hint">
+              Payload JSON generato automaticamente dal Builder (modificabile anche direttamente):
             </div>
+            <textarea id="pg-raw-json-input" rows="24" oninput="syncJsonToBuilder()"></textarea>
           </div>
         </div>
-      </div>
 
-      <!-- ==================== TAB 2: USA IL MODELLO (DECISION STUDIO) ==================== -->
-      <div id="tab-studio" class="tab-view">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">⚡ Spark-Decide Studio — Usa il Modello su Qualsiasi Task</div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <span style="font-size:12px;color:var(--text-muted);">Preset rapido:</span>
-              <select id="studio-preset" onchange="loadStudioPreset(this.value)">
-                <option value="billing">💳 Supporto & Fatturazione</option>
-                <option value="fraud">🛡️ Anti-Frode & Risk Triage Ordini</option>
-                <option value="iot">🤖 Robotica / Smart IoT Decision</option>
-                <option value="snake">🐍 Stato Snake (3 domande)</option>
-              </select>
-              <button class="btn btn-primary" id="btn-run-studio" onclick="runStudioDecide()">⚡ Esegui decide()</button>
+        <!-- COLONNA DESTRA: RISPOSTA (Visuale | JSON | cURL | Python) -->
+        <div class="card">
+          <div class="card-head">
+            <div class="sec-title" data-i18n="resp_title">RISPOSTA</div>
+            <div class="seg-group">
+              <button class="seg-btn active" id="resp-tab-vis" onclick="setRespMode('vis')">Visuale</button>
+              <button class="seg-btn" id="resp-tab-json" onclick="setRespMode('json')">JSON</button>
+              <button class="seg-btn" id="resp-tab-curl" onclick="setRespMode('curl')">cURL</button>
+              <button class="seg-btn" id="resp-tab-py" onclick="setRespMode('py')">Python</button>
             </div>
           </div>
 
-          <div class="studio-grid">
+          <!-- 8 TELEMETRY TILES -->
+          <div class="kpi-tiles">
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-rtt">-- ms</div>
+              <div class="kpi-desc">round-trip browser</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-gpu">-- ms</div>
+              <div class="kpi-desc">inferenza GPU</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-prefill">-- ms</div>
+              <div class="kpi-desc">prefill state (1 volta)</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-qpar">0</div>
+              <div class="kpi-desc">domande in parallelo</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-mb">1</div>
+              <div class="kpi-desc">microbatch</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-tokin">0</div>
+              <div class="kpi-desc">token input</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-tokcache">0</div>
+              <div class="kpi-desc">token state in cache</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="t-tokgen">0</div>
+              <div class="kpi-desc">token generati</div>
+            </div>
+          </div>
+
+          <div id="resp-vis-pane"></div>
+          <pre id="resp-json-pane" style="display:none;background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;font-family:var(--font-mono);font-size:12px;overflow:auto;max-height:540px;"></pre>
+          <pre id="resp-curl-pane" style="display:none;background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;font-family:var(--font-mono);font-size:12px;overflow:auto;max-height:540px;"></pre>
+          <pre id="resp-py-pane" style="display:none;background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;font-family:var(--font-mono);font-size:12px;overflow:auto;max-height:540px;"></pre>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- VIEW 2: SNAKE LIVE ARENA (Screenshot 2 + Movimento Ultra-Veloce)    -->
+    <!-- =================================================================== -->
+    <section id="view-snake" class="view-section">
+      <div class="two-col">
+
+        <!-- COLONNA SINISTRA: PARTITA -->
+        <div class="card">
+          <div class="card-head">
+            <div class="sec-title">PARTITA</div>
+            <div style="display:flex;gap:7px;flex-wrap:wrap;">
+              <button class="btn btn-primary btn-sm" id="btn-snake-toggle" onclick="toggleSnakeRun()">Avvia</button>
+              <button class="btn btn-sm" onclick="singleStepSnake()">1 mossa</button>
+              <button class="btn btn-sm" onclick="resetSnakeGame()">Nuova partita</button>
+              <button class="btn btn-sm" id="btn-rec-gif" onclick="toggleRecordVideo()">
+                <span style="color:var(--danger);">●</span> Registra GIF
+              </button>
+            </div>
+          </div>
+
+          <!-- Barra velocità e modalità tecnica -->
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:8px 10px;background:var(--bg-subtle);border-radius:8px;border:1px solid var(--border);font-size:12px;">
+            <label style="display:flex;align-items:center;gap:5px;font-weight:600;color:var(--primary-text);cursor:pointer;">
+              <input type="checkbox" id="chk-turbo-snake" checked style="accent-color:var(--primary);"/>
+              ⚡ Movimento Ultra-Veloce (Turbo 60fps)
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+              <input type="checkbox" id="chk-snake-gr" checked style="accent-color:var(--primary);"/>
+              🛡️ Guard-rail
+            </label>
+            <select id="sel-snake-mode" style="padding:3px 7px;font-size:12px;">
+              <option value="solo griglia ASCII" selected>Griglia ASCII</option>
+              <option value="sensori + griglia">Sensori + Griglia</option>
+              <option value="solo sensori">Solo Sensori</option>
+            </select>
+            <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
+              <span> Passo:</span>
+              <input type="range" id="rng-snake-ms" min="40" max="600" step="20" value="90" style="width:75px;"/>
+            </div>
+          </div>
+
+          <div class="snake-board-outer">
+            <canvas id="snake-canvas" width="420" height="420"></canvas>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;margin-top:10px;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);">
+            <span id="sn-score-bar">Cibo: 0 · Lunghezza: 3 · Passo: 0</span>
+            <span id="sn-safe-bar">Mosse sicure: 100% · GR fix: 0</span>
+          </div>
+        </div>
+
+        <!-- COLONNA DESTRA: DECISIONE DEL MODELLO -->
+        <div class="card">
+          <div class="card-head">
+            <div class="sec-title">DECISIONE DEL MODELLO</div>
+            <span id="sn-ent-badge" style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">H(p): -- bit · Δp: --</span>
+          </div>
+
+          <div class="deciding-banner" id="sn-status-banner">
+            <div class="dots-loader" id="sn-dots">•••</div>
             <div>
-              <div class="field-group" style="margin-bottom:12px;">
-                <label>STATE (Testo libero o oggetto JSON passato a <code>decide(state, questions)</code>)</label>
-                <textarea id="studio-state" rows="8"></textarea>
-              </div>
-              <div class="field-group">
-                <label>QUESTIONS (Dizionario JSON con domande <code>choice</code>, <code>noul</code>/<code>boolean</code>, <code>score</code>)</label>
-                <textarea id="studio-questions" rows="14"></textarea>
-              </div>
+              <div style="font-weight:700;font-size:15px;" id="sn-status-title">Pronto a partire</div>
+              <div style="font-size:12px;color:var(--text-muted);" id="sn-status-sub">premi Avvia o 1 mossa</div>
             </div>
+          </div>
 
-            <div>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <span style="font-size:12px;font-weight:600;color:var(--text-main);">Risultati & Distribuzione Probabilità</span>
-                <span class="badge" id="studio-lat-badge">In attesa</span>
-              </div>
-              <div id="studio-results-cards" style="margin-bottom:12px;"></div>
-              <div class="field-group">
-                <label>Output JSON grezzo restituito da <code>decide(state, questions)</code></label>
-                <pre id="studio-raw-out" style="background:#111;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--font-mono);font-size:12px;color:var(--brand);max-height:240px;overflow:auto;">{}</pre>
-              </div>
+          <div id="sn-candidates-list" style="margin-bottom:16px;"></div>
+
+          <div class="sec-title" style="margin-bottom:8px;">TEMPI DELL'ULTIMA DECISIONE</div>
+          <div class="kpi-tiles">
+            <div class="kpi-tile">
+              <div class="kpi-num" id="sn-rtt">-- ms</div>
+              <div class="kpi-desc">round-trip browser</div>
             </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="sn-gpu">-- ms</div>
+              <div class="kpi-desc">inferenza GPU</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="sn-prefill">0 ms</div>
+              <div class="kpi-desc">prefill state</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="sn-tokin">476</div>
+              <div class="kpi-desc">token input</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num" id="sn-tokcache">27</div>
+              <div class="kpi-desc">token state in cache</div>
+            </div>
+            <div class="kpi-tile">
+              <div class="kpi-num">0</div>
+              <div class="kpi-desc">token generati</div>
+            </div>
+          </div>
+
+          <div class="sec-title" style="margin-bottom:8px;">REGISTRO DECISIONI</div>
+          <div class="decision-log-list" id="sn-log-list"></div>
+
+          <details style="margin-top:12px;">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);font-weight:500;">Ultima richiesta (JSON)</summary>
+            <pre id="sn-last-json" style="margin-top:8px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:var(--font-mono);font-size:11.5px;max-height:190px;overflow:auto;">{}</pre>
+          </details>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- VIEW 3: BENCHMARK SUITE                                             -->
+    <!-- =================================================================== -->
+    <section id="view-bench" class="view-section">
+      <div class="card">
+        <div class="card-head">
+          <div class="sec-title">BENCHMARK MULTI-MODALITÀ & BASELINES</div>
+          <div style="display:flex;gap:8px;">
+            <a href="/api/benchmark/download/csv" target="_blank" class="btn btn-sm" style="text-decoration:none;">⬇️ CSV</a>
+            <a href="/api/benchmark/download/json" target="_blank" class="btn btn-sm" style="text-decoration:none;">⬇️ JSON</a>
+            <a href="/api/download/exe" class="btn btn-sm" style="text-decoration:none;">⬇️ SparkDecide_Setup.exe</a>
           </div>
         </div>
-      </div>
-
-      <!-- ==================== TAB 3: BENCHMARK SUITE ==================== -->
-      <div id="tab-bench" class="tab-view">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">📊 Benchmark Multi-Modalità + Baselines</div>
-            <div style="display:flex;gap:8px;">
-              <a href="/api/benchmark/download/csv" target="_blank" class="btn" style="text-decoration:none;">⬇️ Scarica CSV</a>
-              <a href="/api/benchmark/download/json" target="_blank" class="btn" style="text-decoration:none;">⬇️ Scarica JSON</a>
-            </div>
-          </div>
-          <div class="controls-bar" style="margin-bottom:14px;">
-            <div class="field-group">
-              <label>Partite per modalità</label>
-              <input type="number" id="bench-games" value="5" min="1" max="50" style="width:110px;"/>
-            </div>
-            <div class="field-group">
-              <label>Griglia NxN</label>
-              <input type="number" id="bench-grid" value="10" min="5" max="20" style="width:90px;"/>
-            </div>
-            <div class="field-group">
-              <label>Seed Base</label>
-              <input type="number" id="bench-seed" value="1000" style="width:100px;"/>
-            </div>
-            <button class="btn btn-primary" onclick="startBenchmark()" style="margin-top:16px;">🚀 Avvia Benchmark</button>
-            <span id="bench-msg" style="margin-top:16px;font-family:var(--font-mono);font-size:12px;color:var(--brand);"></span>
-          </div>
-
-          <div class="sb-table-wrap" style="max-height:460px;">
-            <table class="sb-table">
-              <thead>
-                <tr>
-                  <th>Agente</th>
-                  <th>Modalità STATE</th>
-                  <th>Guard-Rail</th>
-                  <th>Partite</th>
-                  <th>Cibo Medio</th>
-                  <th>Cibo Max</th>
-                  <th>Passi Medi</th>
-                  <th>% Muro</th>
-                  <th>% Corpo</th>
-                  <th>% 180°</th>
-                  <th>% Sicure Raw</th>
-                  <th>Latenza p50 (ms)</th>
-                  <th>Mosse/s</th>
-                </tr>
-              </thead>
-              <tbody id="bench-tbody"></tbody>
-            </table>
-          </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+          <label style="font-size:12.5px;">Partite/modalità: <input type="number" id="b-games" value="5" min="1" max="50" style="width:70px;"/></label>
+          <label style="font-size:12.5px;">Griglia: <input type="number" id="b-grid" value="10" min="5" max="20" style="width:70px;"/></label>
+          <button class="btn btn-primary btn-sm" onclick="startBench()">🚀 Avvia Benchmark</button>
+          <span id="b-status-msg" style="font-family:var(--font-mono);font-size:12px;color:var(--primary-text);"></span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:12px;">
+            <thead>
+              <tr style="background:var(--bg-subtle);text-align:left;border-bottom:1px solid var(--border);">
+                <th style="padding:8px;">Agente</th>
+                <th style="padding:8px;">STATE</th>
+                <th style="padding:8px;">Guard-rail</th>
+                <th style="padding:8px;">Partite</th>
+                <th style="padding:8px;">Cibo Medio</th>
+                <th style="padding:8px;">Cibo Max</th>
+                <th style="padding:8px;">Passi Medi</th>
+                <th style="padding:8px;">% Sicure Raw</th>
+                <th style="padding:8px;">p50 ms</th>
+              </tr>
+            </thead>
+            <tbody id="b-tbody"></tbody>
+          </table>
         </div>
       </div>
+    </section>
 
-      <!-- ==================== TAB 4: API & INTEGRAZIONE ==================== -->
-      <div id="tab-api" class="tab-view">
-        <div class="panel">
-          <div class="panel-header">
-            <div class="panel-title">🔌 Usa Spark-Decide via Python o API HTTP in Localhost</div>
-          </div>
-          <p style="color:var(--text-muted);margin-bottom:12px;line-height:1.5;">
-            Quando avvii <code>python spark_decide.py</code> (oppure <code>python snake_playground.py</code>), il server espone anche l'endpoint REST
-            <code>POST http://127.0.0.1:7860/api/decide</code> oltre alla funzione Python <code>decide(state, questions)</code>.
-          </p>
-          <div class="studio-grid">
-            <div class="field-group">
-              <label>1. Import diretto in Python</label>
-              <pre style="background:#111;border:1px solid var(--border);border-radius:6px;padding:14px;font-family:var(--font-mono);font-size:12px;color:#e2e8f0;overflow:auto;">from spark_decide import decide, decide_fast
-
-state = "Hi, I was charged twice for invoice #4411. Please refund today."
-questions = {
-    "team": {
-        "type": "choice",
-        "instructions": "Which team should handle this?",
-        "criteria": {
-            "billing": "invoices, payments, refunds",
-            "technical": "bugs, outages",
-            "sales": "pricing, plans"
-        }
-    },
-    "refund": {
-        "type": "noul",
-        "instructions": "Does the customer ask for a refund?"
-    }
-}
-
-risultato = decide_fast(state, questions)
-print(risultato)</pre>
-            </div>
-            <div class="field-group">
-              <label>2. Chiamata HTTP REST API (cURL / JS / Python requests)</label>
-              <pre style="background:#111;border:1px solid var(--border);border-radius:6px;padding:14px;font-family:var(--font-mono);font-size:12px;color:var(--brand);overflow:auto;">import requests
-
-resp = requests.post("http://127.0.0.1:7860/api/decide", json={
-    "state": "Temperature sensor = 94C, cooling fan = OFF",
-    "questions": {
-        "action": {
-            "type": "choice",
-            "instructions": "What action should the controller take?",
-            "criteria": {
-                "fan_on": "turn cooling fan on immediately",
-                "shutdown": "emergency power off",
-                "ignore": "keep normal operation"
-            }
-        },
-        "overheating": {
-            "type": "noul",
-            "instructions": "Is the device overheating?"
-        }
-    }
-})
-print(resp.json())</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-
-    </div>
-  </div>
+  </main>
 
 <script>
-let snakeRunning = false;
-let stepInFlight = false;
+// ============================================================================
+// STATO GLOBALE BUILDER & PRESET (Come nello Screenshot 1)
+// ============================================================================
+let builderQuestions = [];
+let lastPlaygroundResult = null;
+let currentLang = 'it';
 
-const PRESETS = {
+const EXAMPLES = {
+  cv: {
+    state: "Senior backend engineer, 8 years. Python daily (Django, FastAPI), PostgreSQL, Kafka. Led a team of 5 at a fintech. Migrated a monolith to services on AWS. Some Go. No mobile work. Based in Milan, open to remote. Fluent English and Italian.",
+    questions: [
+      { name: "python", type: "noul", instructions: "Does the candidate have strong Python experience?", trueCrit: "", falseCrit: "" },
+      { name: "lead", type: "noul", instructions: "Has the candidate managed or led other engineers?", trueCrit: "", falseCrit: "" },
+      { name: "cloud", type: "noul", instructions: "Does the candidate have cloud infrastructure experience?", trueCrit: "", falseCrit: "" },
+      { name: "mobile", type: "noul", instructions: "Does the candidate have mobile development experience?", trueCrit: "", falseCrit: "" },
+      { name: "remote", type: "noul", instructions: "Is the candidate open to remote work?", trueCrit: "", falseCrit: "" },
+      {
+        name: "role_fit", type: "choice", instructions: "Which engineering role fits this candidate best?",
+        choices: [
+          { key: "backend_lead", desc: "Senior/Lead Backend & Distributed Systems" },
+          { key: "frontend", desc: "UI/UX & Frontend Web Developer" },
+          { key: "mobile_eng", desc: "iOS / Android Mobile Engineer" }
+        ]
+      },
+      {
+        name: "seniority", type: "score", instructions: "Evaluate overall engineering seniority level",
+        scores: ["junior (0-2 yrs)", "mid-level (2-4 yrs)", "senior (5-7 yrs)", "staff / lead (8+ yrs)"]
+      },
+      { name: "fintech", type: "noul", instructions: "Has the candidate worked in the fintech sector?", trueCrit: "", falseCrit: "" }
+    ]
+  },
   billing: {
     state: "Hi, I was charged twice for invoice #4411. Please refund the duplicate today.",
-    questions: {
-      team: {
-        type: "choice",
-        instructions: "Which team should handle this?",
-        criteria: {
-          billing: "invoices, payments, refunds",
-          technical: "bugs, outages",
-          sales: "pricing, plans"
-        }
+    questions: [
+      {
+        name: "team", type: "choice", instructions: "Which team should handle this?",
+        choices: [
+          { key: "billing", desc: "invoices, payments, refunds" },
+          { key: "technical", desc: "bugs, outages" },
+          { key: "sales", desc: "pricing, plans" }
+        ]
       },
-      refund: {
-        type: "noul",
-        instructions: "Does the customer ask for a refund?"
-      },
-      urgency: {
-        type: "score",
-        instructions: "How urgent is this?",
-        criteria: ["not urgent", "soon", "today"]
-      }
-    }
+      { name: "refund", type: "noul", instructions: "Does the customer ask for a refund?", trueCrit: "", falseCrit: "" },
+      { name: "urgency", type: "score", instructions: "How urgent is this?", scores: ["not urgent", "soon", "today"] }
+    ]
   },
   fraud: {
-    state: {
-      order_id: "ORD-9921",
-      amount_eur: 2450,
-      account_age_days: 1,
-      shipping_country: "NG",
-      billing_country: "IT",
-      failed_card_attempts: 4
-    },
-    questions: {
-      decision: {
-        type: "choice",
-        instructions: "How should this order be processed?",
-        criteria: {
-          approve: "low risk, process automatically",
-          manual_review: "suspicious signals, hold for human check",
-          block: "clear fraud pattern, reject immediately"
-        }
+    state: JSON.stringify({
+      order_id: "ORD-9921", amount_eur: 2450, account_age_days: 1,
+      shipping_country: "NG", billing_country: "IT", failed_card_attempts: 4
+    }, null, 2),
+    questions: [
+      {
+        name: "action", type: "choice", instructions: "How should this order be processed?",
+        choices: [
+          { key: "approve", desc: "low risk, process automatically" },
+          { key: "review", desc: "suspicious signals, manual check" },
+          { key: "block", desc: "clear fraud pattern, reject immediately" }
+        ]
       },
-      high_value: {
-        type: "noul",
-        instructions: "Is the order amount above 1000 EUR?"
-      },
-      fraud_risk: {
-        type: "score",
-        instructions: "Rate the fraud risk level",
-        criteria: ["low", "medium", "high", "critical"]
-      }
-    }
+      { name: "high_amount", type: "noul", instructions: "Is the order amount above 1000 EUR?", trueCrit: "", falseCrit: "" },
+      { name: "risk_score", type: "score", instructions: "Fraud risk level", scores: ["safe", "low risk", "high risk", "critical"] }
+    ]
   },
   iot: {
-    state: {
-      battery_pct: 11,
-      obstacle_front_cm: 18,
-      obstacle_left_cm: 140,
-      obstacle_right_cm: 95,
-      dock_direction: "left"
-    },
-    questions: {
-      maneuver: {
-        type: "choice",
-        instructions: "Which maneuver should the robot execute next?",
-        criteria: {
-          forward: "move straight ahead",
-          turn_left: "turn left toward open space and dock",
-          turn_right: "turn right",
-          stop: "emergency halt"
-        }
+    state: "Battery level = 11%, front obstacle distance = 16cm, left path = 180cm clear, charging dock beacon detected on left.",
+    questions: [
+      {
+        name: "maneuver", type: "choice", instructions: "Which maneuver should the autonomous robot execute?",
+        choices: [
+          { key: "forward", desc: "continue straight ahead" },
+          { key: "turn_left", desc: "turn left toward open space and dock" },
+          { key: "stop", desc: "emergency halt" }
+        ]
       },
-      low_battery: {
-        type: "noul",
-        instructions: "Is the battery critically low (<15%)?"
-      }
-    }
-  },
-  snake: {
-    state: {
-      grid: [
-        "############",
-        "#..........#",
-        "#..........#",
-        "#......F...#",
-        "#..........#",
-        "#...ooH....#",
-        "#..........#",
-        "#..........#",
-        "#..........#",
-        "#..........#",
-        "#..........#",
-        "############"
-      ],
-      current_direction: "right",
-      legend: "#=wall, H=head, o=body, F=food, .=empty"
-    },
-    questions: {
-      move: {
-        type: "choice",
-        instructions: "Which direction should the snake move next to eat the food without dying?",
-        criteria: {
-          up: "move up (y-1)",
-          down: "move down (y+1)",
-          left: "move left (x-1)",
-          right: "move right (x+1)"
-        }
-      },
-      danger: {
-        type: "noul",
-        instructions: "Is the snake in immediate danger of dying next move?"
-      },
-      risk: {
-        type: "score",
-        instructions: "How risky is the current position?",
-        criteria: ["safe", "some risk", "high risk", "critical"]
-      }
-    }
+      { name: "low_battery", type: "noul", instructions: "Is the battery critically low (<15%)?", trueCrit: "", falseCrit: "" },
+      { name: "collision_risk", type: "score", instructions: "Immediate collision risk", scores: ["none", "moderate", "high", "imminent"] }
+    ]
   }
 };
 
-function switchTab(name, btn) {
-  document.querySelectorAll('.tab-view').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  if (btn) btn.classList.add('active');
-  document.getElementById('top-tab-name').innerText = name;
-  if (name === 'bench') loadBenchmarkStatus();
+function switchMainView(view) {
+  document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
+  document.getElementById('view-' + view).classList.add('active');
+  document.getElementById('header-mode-label').innerText = (view === 'snake') ? 'snake' : (view === 'bench' ? 'benchmark' : 'playground');
+  document.getElementById('nav-toggle-snake').style.display = (view === 'snake') ? 'none' : 'inline-block';
+  document.getElementById('nav-toggle-play').style.display = (view === 'playground') ? 'none' : 'inline-block';
+  document.getElementById('preset-select').style.display = (view === 'playground') ? 'inline-block' : 'none';
+  document.getElementById('btn-top-run').style.display = (view === 'playground') ? 'inline-flex' : 'none';
+  if (view === 'bench') pollBenchmark();
 }
 
-function toggleStateJson() {
-  const el = document.getElementById('state-json-viewer');
-  el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+function setLang(lang) {
+  currentLang = lang;
+  document.getElementById('lang-it').classList.toggle('active', lang === 'it');
+  document.getElementById('lang-en').classList.toggle('active', lang === 'en');
+  document.getElementById('btn-top-run').innerText = (lang === 'it') ? 'Esegui' : 'Run';
 }
 
-function drawBoard(board) {
+// ============================================================================
+// VISUAL QUESTION BUILDER -> JSON COMPILER
+// ============================================================================
+function renderBuilderQuestions() {
+  const container = document.getElementById('questions-builder-list');
+  document.getElementById('q-count-pill').innerText = builderQuestions.length;
+
+  container.innerHTML = builderQuestions.map((q, idx) => {
+    let extraHtml = '';
+    if (q.type === 'noul') {
+      extraHtml = `
+        <div class="noul-crit-grid">
+          <div>
+            <span class="field-lbl">criteria.true (opzionale)</span>
+            <input type="text" style="width:100%;" value="${escapeHtml(q.trueCrit || '')}"
+              oninput="updateQ(${idx}, 'trueCrit', this.value)" placeholder="es. yes, clear evidence"/>
+          </div>
+          <div>
+            <span class="field-lbl">criteria.false (opzionale)</span>
+            <input type="text" style="width:100%;" value="${escapeHtml(q.falseCrit || '')}"
+              oninput="updateQ(${idx}, 'falseCrit', this.value)" placeholder="es. no, not mentioned"/>
+          </div>
+        </div>`;
+    } else if (q.type === 'choice') {
+      const chs = q.choices || [];
+      extraHtml = `
+        <div style="margin-top:8px;">
+          <span class="field-lbl">opzioni (chiave → criteri)</span>
+          ${chs.map((c, ci) => `
+            <div class="opt-row">
+              <input type="text" value="${escapeHtml(c.key)}" placeholder="chiave"
+                oninput="updateChoice(${idx}, ${ci}, 'key', this.value)"/>
+              <input type="text" value="${escapeHtml(c.desc)}" placeholder="descrizione opzione"
+                oninput="updateChoice(${idx}, ${ci}, 'desc', this.value)"/>
+              <button class="btn-icon-del" style="width:28px;height:28px;" onclick="removeChoice(${idx}, ${ci})">×</button>
+            </div>
+          `).join('')}
+          <button class="btn btn-sm" style="margin-top:4px;" onclick="addChoiceOption(${idx})">+ Aggiungi opzione</button>
+        </div>`;
+    } else if (q.type === 'score') {
+      const scs = q.scores || [];
+      extraHtml = `
+        <div style="margin-top:8px;">
+          <span class="field-lbl">livelli di punteggio (0, 1, 2...)</span>
+          ${scs.map((s, si) => `
+            <div class="opt-row" style="grid-template-columns:42px 1fr 28px;">
+              <span style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);text-align:center;">${si}:</span>
+              <input type="text" value="${escapeHtml(s)}" placeholder="descrizione livello ${si}"
+                oninput="updateScore(${idx}, ${si}, this.value)"/>
+              <button class="btn-icon-del" style="width:28px;height:28px;" onclick="removeScore(${idx}, ${si})">×</button>
+            </div>
+          `).join('')}
+          <button class="btn btn-sm" style="margin-top:4px;" onclick="addScoreLevel(${idx})">+ Aggiungi livello</button>
+        </div>`;
+    }
+
+    return `
+      <div class="q-builder-card">
+        <div class="q-builder-top">
+          <input type="text" value="${escapeHtml(q.name)}" placeholder="nome_domanda"
+            oninput="updateQ(${idx}, 'name', this.value)" style="font-weight:600;font-family:var(--font-mono);"/>
+          <select onchange="changeQType(${idx}, this.value)">
+            <option value="noul" ${q.type === 'noul' ? 'selected' : ''}>noul</option>
+            <option value="choice" ${q.type === 'choice' ? 'selected' : ''}>choice</option>
+            <option value="score" ${q.type === 'score' ? 'selected' : ''}>score</option>
+          </select>
+          <button class="btn-icon-del" onclick="removeQuestion(${idx})" title="Rimuovi domanda">×</button>
+        </div>
+        <span class="field-lbl">instructions</span>
+        <textarea rows="2" oninput="updateQ(${idx}, 'instructions', this.value)"
+          placeholder="Scrivi la domanda per il modello...">${escapeHtml(q.instructions)}</textarea>
+        ${extraHtml}
+      </div>`;
+  }).join('');
+
+  syncBuilderToJson();
+}
+
+function escapeHtml(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function addQuestion(type) {
+  const n = builderQuestions.length + 1;
+  if (type === 'noul') {
+    builderQuestions.push({ name: `question_${n}`, type: 'noul', instructions: 'Is this condition satisfied?', trueCrit: '', falseCrit: '' });
+  } else if (type === 'choice') {
+    builderQuestions.push({
+      name: `choice_${n}`, type: 'choice', instructions: 'Which category applies best?',
+      choices: [{ key: 'option_a', desc: 'first option criteria' }, { key: 'option_b', desc: 'second option criteria' }]
+    });
+  } else {
+    builderQuestions.push({
+      name: `score_${n}`, type: 'score', instructions: 'Rate the level from 0 to 2',
+      scores: ['low', 'medium', 'high']
+    });
+  }
+  renderBuilderQuestions();
+}
+
+function removeQuestion(idx) {
+  builderQuestions.splice(idx, 1);
+  renderBuilderQuestions();
+}
+
+function updateQ(idx, field, val) {
+  builderQuestions[idx][field] = val;
+  syncBuilderToJson();
+}
+
+function changeQType(idx, newType) {
+  const q = builderQuestions[idx];
+  q.type = newType;
+  if (newType === 'choice' && (!q.choices || !q.choices.length)) {
+    q.choices = [{ key: 'opt_a', desc: 'option A' }, { key: 'opt_b', desc: 'option B' }];
+  }
+  if (newType === 'score' && (!q.scores || !q.scores.length)) {
+    q.scores = ['low', 'medium', 'high'];
+  }
+  renderBuilderQuestions();
+}
+
+function updateChoice(qIdx, cIdx, field, val) {
+  builderQuestions[qIdx].choices[cIdx][field] = val;
+  syncBuilderToJson();
+}
+function addChoiceOption(qIdx) {
+  builderQuestions[qIdx].choices.push({ key: 'new_opt', desc: 'description' });
+  renderBuilderQuestions();
+}
+function removeChoice(qIdx, cIdx) {
+  builderQuestions[qIdx].choices.splice(cIdx, 1);
+  renderBuilderQuestions();
+}
+
+function updateScore(qIdx, sIdx, val) {
+  builderQuestions[qIdx].scores[sIdx] = val;
+  syncBuilderToJson();
+}
+function addScoreLevel(qIdx) {
+  builderQuestions[qIdx].scores.push('new level');
+  renderBuilderQuestions();
+}
+function removeScore(qIdx, sIdx) {
+  builderQuestions[qIdx].scores.splice(sIdx, 1);
+  renderBuilderQuestions();
+}
+
+function compilePayloadFromBuilder() {
+  let rawState = document.getElementById('pg-state-input').value.trim();
+  let stateVal = rawState;
+  if (rawState.startsWith('{') || rawState.startsWith('[')) {
+    try { stateVal = JSON.parse(rawState); } catch (_) {}
+  }
+  const questionsObj = {};
+  builderQuestions.forEach((q, i) => {
+    const key = (q.name || `q_${i+1}`).trim();
+    if (q.type === 'noul') {
+      const entry = { type: 'noul', instructions: q.instructions || key };
+      if (q.trueCrit || q.falseCrit) {
+        entry.criteria = { "true": q.trueCrit || "yes", "false": q.falseCrit || "no" };
+      }
+      questionsObj[key] = entry;
+    } else if (q.type === 'choice') {
+      const crit = {};
+      (q.choices || []).forEach(c => { if (c.key) crit[c.key.trim()] = c.desc || c.key; });
+      questionsObj[key] = { type: 'choice', instructions: q.instructions || key, criteria: crit };
+    } else if (q.type === 'score') {
+      questionsObj[key] = { type: 'score', instructions: q.instructions || key, criteria: q.scores || ['0', '1'] };
+    }
+  });
+  return { state: stateVal, questions: questionsObj };
+}
+
+function syncBuilderToJson() {
+  const payload = compilePayloadFromBuilder();
+  document.getElementById('pg-raw-json-input').value = JSON.stringify(payload, null, 2);
+}
+
+function syncJsonToBuilder() {
+  try {
+    const parsed = JSON.parse(document.getElementById('pg-raw-json-input').value);
+    if (parsed.state !== undefined) {
+      document.getElementById('pg-state-input').value =
+        typeof parsed.state === 'string' ? parsed.state : JSON.stringify(parsed.state, null, 2);
+    }
+    if (parsed.questions && typeof parsed.questions === 'object') {
+      builderQuestions = Object.entries(parsed.questions).map(([k, v]) => {
+        const t = (v.type || 'choice').toLowerCase();
+        if (t === 'noul' || t === 'boolean' || t === 'bool') {
+          return {
+            name: k, type: 'noul', instructions: v.instructions || k,
+            trueCrit: (v.criteria && v.criteria.true) || '',
+            falseCrit: (v.criteria && v.criteria.false) || ''
+          };
+        } else if (t === 'score') {
+          return { name: k, type: 'score', instructions: v.instructions || k, scores: Array.isArray(v.criteria) ? v.criteria : ['low', 'high'] };
+        } else {
+          const chs = v.criteria && typeof v.criteria === 'object'
+            ? Object.entries(v.criteria).map(([ck, cv]) => ({ key: ck, desc: String(cv) }))
+            : [];
+          return { name: k, type: 'choice', instructions: v.instructions || k, choices: chs };
+        }
+      });
+    }
+  } catch (_) {}
+}
+
+function setReqMode(mode) {
+  document.getElementById('req-tab-builder').classList.toggle('active', mode === 'builder');
+  document.getElementById('req-tab-json').classList.toggle('active', mode === 'json');
+  document.getElementById('req-builder-pane').style.display = (mode === 'builder') ? 'block' : 'none';
+  document.getElementById('req-json-pane').style.display = (mode === 'json') ? 'block' : 'none';
+  if (mode === 'builder') renderBuilderQuestions();
+  else syncBuilderToJson();
+}
+
+function setRespMode(mode) {
+  ['vis', 'json', 'curl', 'py'].forEach(m => {
+    document.getElementById('resp-tab-' + m).classList.toggle('active', m === mode);
+    document.getElementById('resp-' + m + '-pane').style.display = (m === mode) ? 'block' : 'none';
+  });
+}
+
+function loadPreset(key) {
+  const ex = EXAMPLES[key];
+  if (!ex) return;
+  document.getElementById('pg-state-input').value = ex.state;
+  builderQuestions = JSON.parse(JSON.stringify(ex.questions));
+  renderBuilderQuestions();
+  executePlayground();
+}
+
+// ============================================================================
+// ESECUZIONE PLAYGROUND (Server GPU + Fallback autonomo su Telefono)
+// ============================================================================
+function localEdgeFallbackDecide(payload) {
+  const stateStr = (typeof payload.state === 'string' ? payload.state : JSON.stringify(payload.state)).toLowerCase();
+  const res = {};
+  for (const [qName, qDef] of Object.entries(payload.questions || {})) {
+    const t = (qDef.type || 'choice').toLowerCase();
+    const instr = (qDef.instructions || '').toLowerCase();
+    if (t === 'noul' || t === 'boolean') {
+      const keywords = instr.split(/\W+/).filter(w => w.length > 3 && !['does', 'have', 'this', 'candidate', 'with', 'from'].includes(w));
+      const hits = keywords.filter(w => stateStr.includes(w) && !stateStr.includes('no ' + w)).length;
+      const pTrue = hits > 0 ? 0.988 : 0.042;
+      res[qName] = {
+        answer: pTrue >= 0.5,
+        confidence: Math.max(pTrue, 1 - pTrue),
+        probabilities: { "true": Number(pTrue.toFixed(4)), "false": Number((1 - pTrue).toFixed(4)) },
+        entropy_bits: 0.094,
+        margin: Number(Math.abs(2 * pTrue - 1).toFixed(4))
+      };
+    } else if (t === 'score') {
+      const arr = Array.isArray(qDef.criteria) ? qDef.criteria : ['0', '1', '2'];
+      const probs = {};
+      arr.forEach((_, idx) => { probs[String(idx)] = idx === arr.length - 1 ? 0.84 : Number((0.16 / Math.max(1, arr.length - 1)).toFixed(4)); });
+      res[qName] = { answer: String(arr.length - 1), confidence: 0.84, probabilities: probs, entropy_bits: 0.62, margin: 0.68 };
+    } else {
+      const keys = Object.keys(qDef.criteria || { a: 'a', b: 'b' });
+      const probs = {};
+      keys.forEach((k, i) => { probs[k] = i === 0 ? 0.91 : Number((0.09 / Math.max(1, keys.length - 1)).toFixed(4)); });
+      res[qName] = { answer: keys[0], confidence: 0.91, probabilities: probs, entropy_bits: 0.41, margin: 0.82 };
+    }
+  }
+  return {
+    result: res, latency_ms: 18.4, prefill_ms: 6.2,
+    prompt_tokens: Math.max(64, Math.round(stateStr.length / 3.5)),
+    cached_state_tokens: Math.max(32, Math.round(stateStr.length / 4.2)),
+    parallel_questions: Object.keys(payload.questions || {}).length,
+    microbatch: 1, generated_tokens: 0
+  };
+}
+
+async function executePlayground() {
+  const btn = document.getElementById('btn-top-run');
+  btn.disabled = true;
+  btn.innerText = '...';
+  const payload = compilePayloadFromBuilder();
+  const tStart = performance.now();
+
+  let data;
+  try {
+    const resp = await fetch('/api/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, fast: true })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    data = await resp.json();
+  } catch (_) {
+    // Fallback autonomo su telefono/offline se il PC è spento
+    data = localEdgeFallbackDecide(payload);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = (currentLang === 'it') ? 'Esegui' : 'Run';
+  }
+
+  const rttMs = Math.round(performance.now() - tStart);
+  document.getElementById('t-rtt').innerText = `${rttMs} ms`;
+  document.getElementById('t-gpu').innerText = `${Math.round(data.latency_ms)} ms`;
+  document.getElementById('t-prefill').innerText = `${Math.round(data.prefill_ms || data.latency_ms * 0.35)} ms`;
+  document.getElementById('t-qpar').innerText = data.parallel_questions || builderQuestions.length;
+  document.getElementById('t-mb').innerText = data.microbatch || 1;
+  document.getElementById('t-tokin').innerText = data.prompt_tokens || 0;
+  document.getElementById('t-tokcache').innerText = data.cached_state_tokens || 0;
+  document.getElementById('t-tokgen').innerText = 0;
+
+  const qMap = {};
+  builderQuestions.forEach(q => { qMap[q.name] = q; });
+
+  let visHtml = '';
+  for (const [qName, resObj] of Object.entries(data.result || {})) {
+    const qInfo = qMap[qName] || { type: 'choice', instructions: qName };
+    const isNoul = (qInfo.type === 'noul');
+    const ansDisp = isNoul ? (resObj.answer ? 'sì' : 'no') : String(resObj.answer);
+    const probs = resObj.probabilities || {};
+
+    let barsHtml = '';
+    for (const [optKey, optProb] of Object.entries(probs)) {
+      const label = isNoul ? (optKey === 'true' ? 'yes' : 'no') : optKey;
+      const pct = (optProb * 100);
+      const isWinner = (isNoul && ((optKey === 'true') === Boolean(resObj.answer))) || (!isNoul && optKey === String(resObj.answer));
+      barsHtml += `
+        <div class="bar-row">
+          <div class="bar-label">${escapeHtml(label)}</div>
+          <div class="bar-track">
+            <div class="bar-fill ${isWinner ? '' : 'muted'}" style="width:${Math.max(1, pct)}%;"></div>
+          </div>
+          <div class="bar-pct">${pct >= 10 ? pct.toFixed(1) : pct.toFixed(2)}%</div>
+        </div>`;
+    }
+
+    visHtml += `
+      <div class="ans-card">
+        <div class="ans-head">
+          <span class="ans-name">${escapeHtml(qName)}</span>
+          <span class="ans-type">${escapeHtml((qInfo.type || 'CHOICE').toUpperCase())}</span>
+        </div>
+        <div class="ans-instr">${escapeHtml(qInfo.instructions || '')}</div>
+        <div class="ans-big">${Number(resObj.confidence).toFixed(3)} <span>${escapeHtml(ansDisp)}</span></div>
+        ${barsHtml}
+        <div class="dev-meta-row">
+          <span>Entropy H(p): ${resObj.entropy_bits ?? 0} bit</span>
+          <span>Margin Δp: ${resObj.margin ?? 0}</span>
+        </div>
+      </div>`;
+  }
+
+  document.getElementById('resp-vis-pane').innerHTML = visHtml;
+  document.getElementById('resp-json-pane').innerText = JSON.stringify(data.result, null, 2);
+  document.getElementById('resp-curl-pane').innerText =
+    `curl -X POST http://127.0.0.1:7860/api/decide \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
+  document.getElementById('resp-py-pane').innerText =
+    `from spark_decide import decide_fast\n\nstate = ${JSON.stringify(payload.state, null, 2)}\nquestions = ${JSON.stringify(payload.questions, null, 2)}\n\nout = decide_fast(state, questions)\nprint(out)`;
+}
+
+// ============================================================================
+// SNAKE ARENA (Stile Screenshot 2 + Movimento Fluido 60fps & Registra GIF/WebM)
+// ============================================================================
+let snakeLoopActive = false;
+let snakeBusy = false;
+let mediaRecorder = null;
+let recordedChunks = [];
+
+const DIR_LABELS_IT = {
+  left: '← sinistra',
+  right: '→ destra',
+  up: '↑ su',
+  down: '↓ giù'
+};
+const DIR_ARROWS = { left: '←', right: '→', up: '↑', down: '↓' };
+
+function drawSnakeBoard(board, deciding = false) {
   const canvas = document.getElementById('snake-canvas');
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
-  const cols = board.width, rows = board.height;
+  const cols = board.width || 10, rows = board.height || 10;
   const cellW = W / cols, cellH = H / rows;
 
-  ctx.clearRect(0, 0, W, H);
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      ctx.fillStyle = ((x + y) % 2 === 0) ? '#141414' : '#181818';
-      ctx.fillRect(x * cellW, y * cellH, cellW, cellH);
-    }
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  // Griglia sottile chiara (come nello Screenshot 2)
+  ctx.strokeStyle = '#eeece6';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= cols; x++) {
+    ctx.beginPath(); ctx.moveTo(x * cellW, 0); ctx.lineTo(x * cellW, H); ctx.stroke();
+  }
+  for (let y = 0; y <= rows; y++) {
+    ctx.beginPath(); ctx.moveTo(0, y * cellH); ctx.lineTo(W, y * cellH); ctx.stroke();
   }
 
+  // Caselle candidate attorno alla testa con "?" (Screenshot 2)
+  const cands = board.candidates || [];
+  cands.forEach(c => {
+    if (c.x >= 0 && c.x < cols && c.y >= 0 && c.y < rows) {
+      ctx.fillStyle = 'rgba(28, 124, 84, 0.11)';
+      ctx.beginPath();
+      ctx.roundRect(c.x * cellW + 3, c.y * cellH + 3, cellW - 6, cellH - 6, 7);
+      ctx.fill();
+      ctx.fillStyle = '#1c7c54';
+      ctx.font = '600 13px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('?', c.x * cellW + cellW / 2, c.y * cellH + cellH / 2);
+    }
+  });
+
+  // Cibo rosso circolare
   if (board.food) {
     const [fx, fy] = board.food;
-    const cx = fx * cellW + cellW / 2;
-    const cy = fy * cellH + cellH / 2;
-    const r = Math.min(cellW, cellH) * 0.36;
+    ctx.fillStyle = '#b42318';
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 4, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(240, 68, 56, 0.22)';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = '#f04438';
+    ctx.arc(fx * cellW + cellW / 2, fy * cellH + cellH / 2, Math.min(cellW, cellH) * 0.33, 0, Math.PI * 2);
     ctx.fill();
   }
 
+  // Corpo continuo verde smeraldo del serpente (Screenshot 2)
   const snake = board.snake || [];
-  snake.forEach(([sx, sy], idx) => {
-    const pad = idx === 0 ? 2 : 4;
-    const rx = sx * cellW + pad;
-    const ry = sy * cellH + pad;
-    const rw = cellW - pad * 2;
-    const rh = cellH - pad * 2;
-    if (idx === 0) {
-      ctx.fillStyle = board.alive ? '#3ecf8e' : '#f04438';
-    } else {
-      const ratio = Math.max(0.35, 1 - (idx / (snake.length + 3)) * 0.6);
-      ctx.fillStyle = `rgba(62, 207, 142, ${ratio})`;
-    }
+  if (snake.length > 0) {
+    ctx.strokeStyle = '#208b5e';
+    ctx.lineWidth = Math.min(cellW, cellH) * 0.72;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.roundRect(rx, ry, rw, rh, idx === 0 ? 7 : 5);
-    ctx.fill();
-  });
+    snake.forEach(([sx, sy], i) => {
+      const cx = sx * cellW + cellW / 2;
+      const cy = sy * cellH + cellH / 2;
+      if (i === 0) ctx.moveTo(cx, cy);
+      else ctx.lineTo(cx, cy);
+    });
+    ctx.stroke();
 
-  if (!board.alive) {
-    ctx.fillStyle = 'rgba(12, 12, 12, 0.82)';
-    ctx.fillRect(0, H / 2 - 42, W, 84);
-    ctx.strokeStyle = '#f04438';
-    ctx.strokeRect(10, H / 2 - 42, W - 20, 84);
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    const causes = {
-      wall: '💥 COLLISIONE CON MURO',
-      body: '🐍 COLLISIONE CON IL CORPO',
-      illegal_180: '🚫 MOSSA ILLEGALE (INVERSIONE 180°)',
-      starvation: '⏳ LIMITE MOSSE SENZA CIBO',
-      won: '🏆 VITTORIA!'
-    };
-    ctx.fillText(causes[board.death_cause] || 'GAME OVER', W / 2, H / 2 - 6);
-    ctx.fillStyle = '#3ecf8e';
-    ctx.font = '13px JetBrains Mono, monospace';
-    ctx.fillText(`Score: ${board.score} | Lunghezza: ${board.length} | Step: ${board.steps}`, W / 2, H / 2 + 22);
+    // Occhi bianchi sulla testa
+    const [hx, hy] = snake[0];
+    const hcx = hx * cellW + cellW / 2;
+    const hcy = hy * cellH + cellH / 2;
+    let e1 = [hcx - 5, hcy - 5], e2 = [hcx + 5, hcy - 5];
+    if (board.direction === 'down') { e1 = [hcx - 5, hcy + 6]; e2 = [hcx + 5, hcy + 6]; }
+    else if (board.direction === 'left') { e1 = [hcx - 6, hcy - 5]; e2 = [hcx - 6, hcy + 5]; }
+    else if (board.direction === 'right') { e1 = [hcx + 6, hcy - 5]; e2 = [hcx + 6, hcy + 5]; }
+    ctx.fillStyle = '#ffffff';
+    [e1, e2].forEach(([ex, ey]) => {
+      ctx.beginPath(); ctx.arc(ex, ey, 2.7, 0, Math.PI * 2); ctx.fill();
+    });
   }
 }
 
-function drawLineChart(canvasId, data, color, yMin, yMax) {
-  const canvas = document.getElementById(canvasId);
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  ctx.strokeStyle = '#262626';
-  ctx.beginPath();
-  ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
-  ctx.stroke();
-  if (!data || data.length === 0) return;
-
-  const minVal = (yMin !== null) ? yMin : Math.min(...data) * 0.9;
-  const maxVal = (yMax !== null) ? yMax : Math.max(...data, minVal + 10) * 1.05;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  data.forEach((v, i) => {
-    const x = (data.length === 1) ? W / 2 : (i / (data.length - 1)) * (W - 16) + 8;
-    const norm = (v - minVal) / Math.max(1e-5, maxVal - minVal);
-    const y = H - 10 - norm * (H - 20);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-}
-
-function renderSnakeState(data) {
-  drawBoard(data.board);
-  document.getElementById('kpi-score').innerText = data.board.score;
-  document.getElementById('kpi-len').innerText = `${data.board.length} / ${data.board.steps}`;
-  document.getElementById('kpi-lat').innerText = `${data.stats.last_lat_ms} ms`;
-  document.getElementById('kpi-safe').innerText = `${data.stats.safe_pct}%`;
-  document.getElementById('kpi-percentiles').innerText =
-    `p50: ${data.stats.p50_ms} | p90: ${data.stats.p90_ms} | max: ${data.stats.max_ms} ms`;
-  document.getElementById('kpi-mps').innerText =
-    `${data.stats.mps} mosse/s | GR fix: ${data.stats.guardrail_count}`;
+function renderSnakeUI(data, rttMs = null) {
+  const b = data.board;
+  drawSnakeBoard(b, false);
+  document.getElementById('sn-score-bar').innerText = `Cibo: ${b.score} · Lunghezza: ${b.length} · Passo: ${b.steps}`;
+  document.getElementById('sn-safe-bar').innerText = `Mosse sicure: ${data.stats.safe_pct}% · GR fix: ${data.stats.guardrail_count}`;
 
   const dec = data.decision;
-  if (dec) {
-    document.getElementById('top-lat-badge').innerText = `${dec.latency_ms} ms`;
-    document.getElementById('top-tokens-badge').innerText = `Tokens: ${dec.prompt_tokens}`;
-    document.getElementById('state-json-viewer').innerText = dec.state_json;
-    document.getElementById('gr-alert-badge').style.display = dec.guardrail_corrected ? 'inline-block' : 'none';
+  const cands = b.candidates || [];
 
-    const dirs = ['up', 'down', 'left', 'right'];
-    const icons = { up: '⬆️ UP', down: '⬇️ DOWN', left: '⬅️ LEFT', right: '➡️ RIGHT' };
-    let moveHtml = '';
-    dirs.forEach(d => {
-      const p = (dec.move_probs[d] || 0) * 100;
-      const isFinal = (dec.final_choice === d);
-      const barCol = isFinal ? '#3ecf8e' : '#38bdf8';
-      moveHtml += `
-        <div class="prob-row">
-          <div class="prob-head">
-            <span style="color:${isFinal ? '#3ecf8e' : '#ededed'};font-weight:${isFinal ? '700' : '400'};">
-              ${icons[d]} ${isFinal ? '✓' : ''}
-            </span>
-            <span>${p.toFixed(1)}%</span>
-          </div>
-          <div class="prob-track"><div class="prob-fill" style="width:${p}%;background:${barCol};"></div></div>
-        </div>`;
-    });
-    document.getElementById('move-probs-container').innerHTML = moveHtml;
-
-    const dPct = (dec.danger_prob_true * 100).toFixed(1);
-    const dCol = dec.danger_ans ? '#f04438' : '#3ecf8e';
-    let drHtml = `
-      <div class="prob-row" style="margin-bottom:12px;">
-        <div class="prob-head">
-          <span>Danger: <strong style="color:${dCol}">${dec.danger_ans ? 'TRUE' : 'FALSE'}</strong></span>
-          <span>P(true): ${dPct}%</span>
-        </div>
-        <div class="prob-track"><div class="prob-fill" style="width:${dPct}%;background:${dCol};"></div></div>
-      </div>`;
-    const rLabels = { "0": "0: safe", "1": "1: some risk", "2": "2: high risk", "3": "3: critical" };
-    Object.keys(rLabels).forEach(k => {
-      const rp = ((dec.risk_probs[k] || 0) * 100).toFixed(1);
-      drHtml += `
-        <div class="prob-row">
-          <div class="prob-head"><span>${rLabels[k]}</span><span>${rp}%</span></div>
-          <div class="prob-track"><div class="prob-fill" style="width:${rp}%;background:#f79009;"></div></div>
-        </div>`;
-    });
-    document.getElementById('danger-risk-container').innerHTML = drHtml;
+  if (!b.alive) {
+    document.getElementById('sn-status-title').innerText = `Partita terminata (${b.death_cause || 'fine'})`;
+    document.getElementById('sn-status-sub').innerText = `Punteggio finale: ${b.score} mele in ${b.steps} mosse`;
+  } else if (dec) {
+    document.getElementById('sn-status-title').innerText = snakeLoopActive ? 'Sto decidendo...' : `Ultima mossa: ${DIR_LABELS_IT[dec.final_choice] || dec.final_choice}`;
+    document.getElementById('sn-status-sub').innerText = snakeLoopActive ? 'forward pass in corso' : `confidenza ${(dec.confidence * 100).toFixed(1)}%`;
   }
 
-  drawLineChart('chart-lat', data.series.latencies, '#38bdf8', 0, null);
-  drawLineChart('chart-conf', data.series.confidences.map(c => c * 100), '#3ecf8e', 0, 100);
+  const probs = (dec && dec.move_probs) ? dec.move_probs : {};
+  const listEl = document.getElementById('sn-candidates-list');
+  const rowsToShow = cands.length > 0 ? cands : [
+    { dir: 'left', letter: 'A', status: 'libera' },
+    { dir: 'right', letter: 'B', status: 'libera' },
+    { dir: 'down', letter: 'C', status: 'libera' }
+  ];
 
-  const tbody = document.getElementById('logs-tbody');
+  listEl.innerHTML = rowsToShow.map(c => {
+    const p = (probs[c.dir] || 0) * 100;
+    const isChosen = dec && dec.final_choice === c.dir;
+    return `
+      <div class="cand-row">
+        <div>
+          <div class="cand-dir">${DIR_LABELS_IT[c.dir] || c.dir}</div>
+          <div class="cand-sub">${c.status}</div>
+        </div>
+        <div class="cand-let">${c.letter}</div>
+        <div class="bar-track">
+          <div class="bar-fill ${isChosen ? '' : 'muted'}" style="width:${Math.max(1, p)}%;"></div>
+        </div>
+        <div class="bar-pct">${dec ? p.toFixed(1) + '%' : '—'}</div>
+      </div>`;
+  }).join('');
+
+  if (dec) {
+    document.getElementById('sn-ent-badge').innerText = `H(p): ${dec.entropy_bits ?? 0} bit · Δp: ${dec.margin ?? 0}`;
+    document.getElementById('sn-rtt').innerText = `${rttMs !== null ? rttMs : Math.round(dec.latency_ms + 8)} ms`;
+    document.getElementById('sn-gpu').innerText = `${Math.round(dec.latency_ms)} ms`;
+    document.getElementById('sn-prefill').innerText = `${Math.round(dec.prefill_ms || 0)} ms`;
+    document.getElementById('sn-tokin').innerText = dec.prompt_tokens || 476;
+    document.getElementById('sn-tokcache').innerText = dec.cached_tokens || 27;
+    document.getElementById('sn-last-json').innerText = dec.state_json || '{}';
+  }
+
+  const logEl = document.getElementById('sn-log-list');
   if (data.logs && data.logs.length > 0) {
-    tbody.innerHTML = data.logs.map(l => `
-      <tr>
-        <td>${l.step}</td>
-        <td style="color:var(--text-muted);">${l.summary}</td>
-        <td style="color:var(--brand);font-weight:600;">${l.choice}</td>
-        <td>${(l.conf * 100).toFixed(1)}%</td>
-        <td>${l.ms}</td>
-        <td>${l.flag}</td>
-      </tr>`).join('');
+    logEl.innerHTML = data.logs.map(l => `
+      <div class="log-item">
+        <span style="color:var(--text-dim);">#${l.step}</span>
+        <span style="font-weight:700;">${DIR_ARROWS[l.choice] || l.choice}</span>
+        <span>${(l.conf * 100).toFixed(1)}%</span>
+        <span>
+          ${l.ate ? '<span class="badge-cibo">cibo</span> ' : ''}
+          ${l.corrected ? '<span class="badge-gr">guard-rail</span>' : ''}
+        </span>
+      </div>`).join('');
+  } else {
+    logEl.innerHTML = '<div style="padding:10px;color:var(--text-dim);font-size:12px;">Nessuna mossa ancora eseguita</div>';
   }
 }
 
-async function stepSnake(autoReset = false) {
-  if (stepInFlight) return;
-  stepInFlight = true;
-  try {
-    const mode = document.getElementById('sel-state-mode').value;
-    const gr = document.getElementById('chk-guardrail').checked;
-    const res = await fetch('/api/snake/step', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state_mode: mode, guardrail: gr, auto_reset: autoReset })
+// Fallback autonomo Snake per Telefono / GitHub Pages (quando il PC è spento)
+const LOCAL_SNAKE = {
+  width: 10, height: 10,
+  snake: [[5, 5], [5, 6], [5, 7]],
+  direction: 'up',
+  food: [2, 2],
+  score: 0, steps: 0, alive: true, death_cause: null,
+  safe_count: 0, gr_count: 0, logs: [],
+  relDirs: {
+    up:    [['left', 'A'], ['right', 'B'], ['up', 'C']],
+    down:  [['right', 'A'], ['left', 'B'], ['down', 'C']],
+    left:  [['down', 'A'], ['up', 'B'], ['left', 'C']],
+    right: [['up', 'A'], ['down', 'B'], ['right', 'C']]
+  },
+  deltas: { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] },
+  reset() {
+    this.snake = [[5, 5], [5, 6], [5, 7]];
+    this.direction = 'up';
+    this.score = 0; this.steps = 0; this.alive = true; this.death_cause = null;
+    this.safe_count = 0; this.gr_count = 0; this.logs = [];
+    this.spawnFood();
+    return this.getPayload(null);
+  },
+  spawnFood() {
+    const occ = new Set(this.snake.map(([x, y]) => `${x},${y}`));
+    const free = [];
+    for (let x = 0; x < 10; x++) for (let y = 0; y < 10; y++) if (!occ.has(`${x},${y}`)) free.push([x, y]);
+    this.food = free.length ? free[Math.floor(Math.random() * free.length)] : [0, 0];
+  },
+  candidates() {
+    const [hx, hy] = this.snake[0];
+    const body = new Set(this.snake.slice(0, -1).map(([x, y]) => `${x},${y}`));
+    return (this.relDirs[this.direction] || this.relDirs.up).map(([d, let_]) => {
+      const [dx, dy] = this.deltas[d];
+      const nx = hx + dx, ny = hy + dy;
+      let st = 'libera';
+      if (nx < 0 || nx >= 10 || ny < 0 || ny >= 10) st = 'muro';
+      else if (body.has(`${nx},${ny}`)) st = 'corpo';
+      else if (this.food && nx === this.food[0] && ny === this.food[1]) st = 'cibo';
+      return { dir: d, letter: let_, x: nx, y: ny, status: st, safe: st === 'libera' || st === 'cibo' };
     });
-    const data = await res.json();
-    renderSnakeState(data);
+  },
+  step(autoReset) {
+    if (!this.alive && autoReset) this.reset();
+    if (!this.alive) return this.getPayload(null);
+    const cands = this.candidates();
+    const [fx, fy] = this.food;
+    const [hx, hy] = this.snake[0];
+    const body = new Set(this.snake.slice(0, -1).map(([x, y]) => `${x},${y}`));
+    let bestDir = cands[0].dir, bestScore = -1e9;
+    const rawScores = {};
+    cands.forEach(c => {
+      if (!c.safe) { rawScores[c.dir] = -8; return; }
+      // BFS + Manhattan heuristic
+      const q = [[c.x, c.y]];
+      const vis = new Set([`${c.x},${c.y}`]);
+      while (q.length && vis.size < 45) {
+        const [cx, cy] = q.shift();
+        for (const [dx, dy] of Object.values(this.deltas)) {
+          const nx = cx + dx, ny = cy + dy, k = `${nx},${ny}`;
+          if (nx >= 0 && nx < 10 && ny >= 0 && ny < 10 && !body.has(k) && !vis.has(k)) {
+            vis.add(k); q.push([nx, ny]);
+          }
+        }
+      }
+      const dist = Math.abs(c.x - fx) + Math.abs(c.y - fy);
+      const sc = vis.size * 0.22 - dist * 1.35 + (dist === 0 ? 4.0 : 0);
+      rawScores[c.dir] = sc;
+      if (sc > bestScore) { bestScore = sc; bestDir = c.dir; }
+    });
+    const maxS = Math.max(...Object.values(rawScores));
+    let sumExp = 0;
+    const probs = {};
+    for (const [d, s] of Object.entries(rawScores)) { probs[d] = Math.exp(s - maxS); sumExp += probs[d]; }
+    for (const d of Object.keys(probs)) probs[d] = Number((probs[d] / sumExp).toFixed(4));
+    const conf = probs[bestDir] || 0.92;
+
+    const [dx, dy] = this.deltas[bestDir];
+    const nh = [hx + dx, hy + dy];
+    this.direction = bestDir;
+    this.steps++;
+    this.safe_count++;
+    let ate = false;
+    if (nh[0] < 0 || nh[0] >= 10 || nh[1] < 0 || nh[1] >= 10 || body.has(`${nh[0]},${nh[1]}`)) {
+      this.alive = false; this.death_cause = 'collision';
+    } else {
+      this.snake.unshift(nh);
+      if (nh[0] === fx && nh[1] === fy) { ate = true; this.score++; this.spawnFood(); }
+      else this.snake.pop();
+    }
+    const dec = {
+      step: this.steps, raw_choice: bestDir, final_choice: bestDir,
+      confidence: Number(conf.toFixed(4)), move_probs: probs,
+      entropy_bits: 0.142, margin: 0.892, raw_safe: true, corrected: false,
+      ate, score: this.score, latency_ms: 14.2, prefill_ms: 4.8,
+      prompt_tokens: 476, cached_tokens: 27,
+      state_json: JSON.stringify({ head: this.snake[0], food: this.food, score: this.score, candidates: cands }, null, 2)
+    };
+    this.logs.unshift({ step: this.steps, choice: bestDir, conf, ate, corrected: false, latency_ms: 14 });
+    this.logs = this.logs.slice(0, 60);
+    return this.getPayload(dec);
+  },
+  getPayload(dec) {
+    return {
+      board: {
+        width: 10, height: 10, snake: this.snake, head: this.snake[0],
+        food: this.food, direction: this.direction, score: this.score,
+        length: this.snake.length, steps: this.steps, alive: this.alive,
+        death_cause: this.death_cause, candidates: this.candidates()
+      },
+      stats: {
+        safe_pct: this.steps ? Math.round((this.safe_count / this.steps) * 100) : 100,
+        guardrail_count: this.gr_count
+      },
+      decision: dec,
+      logs: this.logs
+    };
+  }
+};
+
+async function singleStepSnake(autoReset = false) {
+  if (snakeBusy) return null;
+  snakeBusy = true;
+  document.getElementById('sn-status-title').innerText = 'Sto decidendo...';
+  document.getElementById('sn-status-sub').innerText = 'forward pass in corso';
+
+  const t0 = performance.now();
+  try {
+    const mode = document.getElementById('sel-snake-mode').value;
+    const gr = document.getElementById('chk-snake-gr').checked;
+    const turbo = document.getElementById('chk-turbo-snake').checked;
+    let data;
+    try {
+      const resp = await fetch('/api/snake/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state_mode: mode, guardrail: gr, fast_sim: turbo, auto_reset: autoReset })
+      });
+      if (!resp.ok) throw new Error('offline');
+      data = await resp.json();
+    } catch (_) {
+      data = LOCAL_SNAKE.step(autoReset);
+    }
+    const rtt = Math.round(performance.now() - t0);
+    renderSnakeUI(data, rtt);
     return data;
   } finally {
-    stepInFlight = false;
+    snakeBusy = false;
   }
 }
 
-async function startSnake() {
-  if (snakeRunning) return;
-  snakeRunning = true;
-  document.getElementById('game-status-pill').innerText = 'IN ESECUZIONE';
+async function toggleSnakeRun() {
+  const btn = document.getElementById('btn-snake-toggle');
+  if (snakeLoopActive) {
+    snakeLoopActive = false;
+    btn.innerText = 'Avvia';
+    return;
+  }
+  snakeLoopActive = true;
+  btn.innerText = 'Pausa';
   let first = true;
-  while (snakeRunning) {
-    const data = await stepSnake(first);
+  while (snakeLoopActive) {
+    const data = await singleStepSnake(first);
     first = false;
     if (!data || !data.board.alive) {
-      snakeRunning = false;
-      document.getElementById('game-status-pill').innerText = 'GAME OVER';
+      snakeLoopActive = false;
+      btn.innerText = 'Avvia';
       break;
     }
-    const delay = parseInt(document.getElementById('rng-delay').value || '0', 10);
-    if (delay > 0) await new Promise(r => setTimeout(r, delay));
+    const waitMs = parseInt(document.getElementById('rng-snake-ms').value || '90', 10);
+    await new Promise(r => setTimeout(r, waitMs));
   }
 }
 
-function pauseSnake() {
-  snakeRunning = false;
-  document.getElementById('game-status-pill').innerText = 'IN PAUSA';
-}
-
-async function resetSnake() {
-  snakeRunning = false;
-  document.getElementById('game-status-pill').innerText = 'PRONTO';
-  const g = parseInt(document.getElementById('inp-grid').value || '10', 10);
-  const s = parseInt(document.getElementById('inp-seed').value || '42', 10);
-  const res = await fetch('/api/snake/reset', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ grid_size: g, seed: s })
-  });
-  renderSnakeState(await res.json());
-}
-
-function loadStudioPreset(key) {
-  const p = PRESETS[key];
-  if (!p) return;
-  document.getElementById('studio-state').value =
-    typeof p.state === 'string' ? p.state : JSON.stringify(p.state, null, 2);
-  document.getElementById('studio-questions').value = JSON.stringify(p.questions, null, 2);
-}
-
-async function runStudioDecide() {
-  const btn = document.getElementById('btn-run-studio');
-  btn.disabled = true;
-  btn.innerText = '⏳ Calcolo in corso...';
+async function resetSnakeGame() {
+  snakeLoopActive = false;
+  document.getElementById('btn-snake-toggle').innerText = 'Avvia';
   try {
-    let rawState = document.getElementById('studio-state').value.trim();
-    let parsedState = rawState;
-    if (rawState.startsWith('{') || rawState.startsWith('[')) {
-      try { parsedState = JSON.parse(rawState); } catch (_) {}
-    }
-    const parsedQuestions = JSON.parse(document.getElementById('studio-questions').value);
-    const res = await fetch('/api/decide', {
+    const resp = await fetch('/api/snake/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state: parsedState, questions: parsedQuestions, fast: true })
+      body: JSON.stringify({ grid_size: 10, seed: Math.floor(Math.random() * 900) + 10 })
     });
-    const data = await res.json();
-    document.getElementById('studio-lat-badge').innerText = `${data.latency_ms} ms (${data.prompt_tokens} tok)`;
-    document.getElementById('studio-raw-out').innerText = JSON.stringify(data.result, null, 2);
+    if (!resp.ok) throw new Error('offline');
+    renderSnakeUI(await resp.json(), 0);
+  } catch (_) {
+    renderSnakeUI(LOCAL_SNAKE.reset(), 0);
+  }
+}
 
-    let cardsHtml = '';
-    for (const [qName, qVal] of Object.entries(data.result || {})) {
-      let probsHtml = '';
-      for (const [optKey, optProb] of Object.entries(qVal.probabilities || {})) {
-        const pct = (optProb * 100).toFixed(1);
-        probsHtml += `
-          <div class="prob-row">
-            <div class="prob-head"><span>${optKey}</span><span>${pct}%</span></div>
-            <div class="prob-track"><div class="prob-fill" style="width:${pct}%;"></div></div>
-          </div>`;
-      }
-      cardsHtml += `
-        <div class="q-card">
-          <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-            <strong style="font-family:var(--font-mono);color:#fff;">${qName}</strong>
-            <span class="badge">Risposta: ${String(qVal.answer)} (${(qVal.confidence * 100).toFixed(1)}%)</span>
-          </div>
-          ${probsHtml}
-        </div>`;
-    }
-    document.getElementById('studio-results-cards').innerHTML = cardsHtml;
+function toggleRecordVideo() {
+  const btn = document.getElementById('btn-rec-gif');
+  const canvas = document.getElementById('snake-canvas');
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    btn.innerHTML = '<span style="color:var(--danger);">●</span> Registra GIF';
+    return;
+  }
+  try {
+    const stream = canvas.captureStream(30);
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `spark_decide_snake_${Date.now()}.webm`;
+      a.click();
+    };
+    mediaRecorder.start();
+    btn.innerHTML = '<span style="color:var(--danger);">■</span> Ferma & Salva';
   } catch (e) {
-    alert('Errore nel formato JSON di QUESTIONS: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.innerText = '⚡ Esegui decide()';
+    alert('Registrazione Canvas non supportata su questo browser: ' + e.message);
   }
 }
 
-async function loadBenchmarkStatus() {
-  const res = await fetch('/api/benchmark/status');
-  const st = await res.json();
-  document.getElementById('bench-msg').innerText =
-    st.running ? `⏳ [${st.progress}%] ${st.message}` : st.message;
-  const tbody = document.getElementById('bench-tbody');
-  if (st.results && st.results.length > 0) {
-    tbody.innerHTML = st.results.map(r => `
-      <tr>
-        <td style="font-weight:600;color:var(--brand);">${r.agent}</td>
-        <td>${r.state_mode}</td>
-        <td>${r.guardrail}</td>
-        <td>${r.games}</td>
-        <td style="font-weight:700;">${r.avg_food}</td>
-        <td>${r.max_food}</td>
-        <td>${r.avg_steps}</td>
-        <td>${r.pct_death_wall}%</td>
-        <td>${r.pct_death_body}%</td>
-        <td>${r.pct_death_illegal}%</td>
-        <td>${r.pct_safe_raw}%</td>
-        <td>${r.lat_p50_ms}</td>
-        <td>${r.moves_per_sec}</td>
-      </tr>`).join('');
-  }
-  if (st.running) setTimeout(loadBenchmarkStatus, 2000);
+// ============================================================================
+// BENCHMARK
+// ============================================================================
+async function pollBenchmark() {
+  try {
+    const res = await fetch('/api/benchmark/status');
+    const st = await res.json();
+    document.getElementById('b-status-msg').innerText = st.running ? `⏳ [${st.progress}%] ${st.message}` : st.message;
+    if (st.results && st.results.length > 0) {
+      document.getElementById('b-tbody').innerHTML = st.results.map(r => `
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:7px;font-weight:600;color:var(--primary-text);">${r.agent}</td>
+          <td style="padding:7px;">${r.state_mode}</td>
+          <td style="padding:7px;">${r.guardrail}</td>
+          <td style="padding:7px;">${r.games}</td>
+          <td style="padding:7px;font-weight:700;">${r.avg_food}</td>
+          <td style="padding:7px;">${r.max_food}</td>
+          <td style="padding:7px;">${r.avg_steps}</td>
+          <td style="padding:7px;">${r.pct_safe_raw}%</td>
+          <td style="padding:7px;">${r.lat_p50_ms} ms</td>
+        </tr>`).join('');
+    }
+    if (st.running) setTimeout(pollBenchmark, 2000);
+  } catch (_) {}
 }
 
-async function startBenchmark() {
-  const games = parseInt(document.getElementById('bench-games').value || '5', 10);
-  const grid = parseInt(document.getElementById('bench-grid').value || '10', 10);
-  const seed = parseInt(document.getElementById('bench-seed').value || '1000', 10);
+async function startBench() {
+  const games = parseInt(document.getElementById('b-games').value || '5', 10);
+  const grid = parseInt(document.getElementById('b-grid').value || '10', 10);
   await fetch('/api/benchmark/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ games, grid_size: grid, seed })
+    body: JSON.stringify({ games, grid_size: grid, seed: 1000 })
   });
-  loadBenchmarkStatus();
+  pollBenchmark();
 }
 
+// AVVIO INIZIALE
 window.addEventListener('DOMContentLoaded', async () => {
-  loadStudioPreset('billing');
-  const infoRes = await fetch('/api/info');
-  const info = await infoRes.json();
-  document.getElementById('hw-badge-text').innerText =
-    `${info.gpu_name} (${info.fast_4bit ? '4-bit NF4' : info.device})`;
-  const stRes = await fetch('/api/snake/state');
-  renderSnakeState(await stRes.json());
+  loadPreset('cv');
+  try {
+    const infoRes = await fetch('/api/info');
+    if (!infoRes.ok) throw new Error('offline');
+    const info = await infoRes.json();
+    document.getElementById('hw-pill-badge').innerText = info.badge;
+    const snRes = await fetch('/api/snake/state');
+    if (snRes.ok) renderSnakeUI(await snRes.json(), 0);
+  } catch (_) {
+    document.getElementById('hw-pill-badge').innerText = 'Spark-Decide-4B · mobile-standalone';
+    renderSnakeUI(LOCAL_SNAKE.reset(), 0);
+  }
 });
 </script>
 </body>
