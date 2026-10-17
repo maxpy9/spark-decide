@@ -489,17 +489,12 @@ namespace SparkDecideInstaller
                 string foundUrl = m.Value;
                 activeTunnelUrl = foundUrl;
                 AppendLog("=================================================");
-                AppendLog("🌐 URL PUBBLICO ATTIVO PER TELEFONO / GITHUB PAGES:");
+                AppendLog("🌐 URL PUBBLICO HTTPS ATTIVO PER IL TELEFONO:");
                 AppendLog(foundUrl);
                 AppendLog("=================================================");
                 try
                 {
                     File.WriteAllText(Path.Combine(workDir, "tunnel_url.txt"), foundUrl);
-                    string docsDir = Path.Combine(workDir, "docs");
-                    if (Directory.Exists(docsDir))
-                    {
-                        File.WriteAllText(Path.Combine(docsDir, "tunnel_url.json"), "{\"url\":\"" + foundUrl + "\"}");
-                    }
                 }
                 catch { }
             }

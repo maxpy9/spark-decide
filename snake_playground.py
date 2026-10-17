@@ -138,50 +138,27 @@ class GameSession:
         state_obj = self.env.get_state(mode=mode_key)
         prompt_tokens, cached_tokens = count_prompt_tokens(state_obj, SNAKE_QUESTIONS)
 
-        if fast_sim:
-            # Modalità Turbo Fluido: passo tattico istantaneo (~2ms) calibrato con distribuzione softmax
+        # Esecuzione reale del modello su GPU (PyTorch CUDA + DecisionHead)
+        with _MODEL_LOCK:
+            spark_decide.sync()
             t0 = time.perf_counter()
-            best_m = policy_greedy(self.env)
-            safe_m = self.env.get_safe_moves()
-            move_probs = {}
-            for d in ["up", "down", "left", "right"]:
-                if d == best_m:
-                    move_probs[d] = 0.942
-                elif d in safe_m:
-                    move_probs[d] = round(0.050 / max(1, len(safe_m) - 1), 4) if len(safe_m) > 1 else 0.019
-                else:
-                    move_probs[d] = 0.004
-            tot_p = sum(move_probs.values())
-            move_probs = {k: round(v / tot_p, 4) for k, v in move_probs.items()}
-            raw_choice = best_m
-            conf = move_probs[best_m]
-            danger_ans = len(safe_m) <= 1
-            danger_prob_true = 0.85 if danger_ans else 0.04
-            risk_probs = {"0": 0.82, "1": 0.12, "2": 0.04, "3": 0.02} if not danger_ans else {"0": 0.05, "1": 0.15, "2": 0.45, "3": 0.35}
-            risk_ans = "0" if not danger_ans else "2"
-            lat_ms = max(1.2, (time.perf_counter() - t0) * 1000.0)
-            prefill_ms = round(lat_ms * 0.35, 1)
-        else:
-            with _MODEL_LOCK:
-                spark_decide.sync()
-                t0 = time.perf_counter()
-                res = spark_decide.decide_fast(state_obj, SNAKE_QUESTIONS)
-                spark_decide.sync()
-                lat_ms = (time.perf_counter() - t0) * 1000.0
-                prefill_ms = round(lat_ms * 0.32, 1)
+            res = spark_decide.decide_fast(state_obj, SNAKE_QUESTIONS)
+            spark_decide.sync()
+            lat_ms = (time.perf_counter() - t0) * 1000.0
+            prefill_ms = round(lat_ms * 0.32, 1)
 
-            move_res = res["move"]
-            raw_choice = str(move_res["answer"]).lower()
-            move_probs = move_res["probabilities"]
-            conf = float(move_res["confidence"])
+        move_res = res["move"]
+        raw_choice = str(move_res["answer"]).lower()
+        move_probs = move_res["probabilities"]
+        conf = float(move_res["confidence"])
 
-            danger_res = res["danger"]
-            danger_ans = bool(danger_res["answer"])
-            danger_prob_true = float(danger_res["probabilities"].get("true", 0.0))
+        danger_res = res["danger"]
+        danger_ans = bool(danger_res["answer"])
+        danger_prob_true = float(danger_res["probabilities"].get("true", 0.0))
 
-            risk_res = res["risk"]
-            risk_ans = str(risk_res["answer"])
-            risk_probs = risk_res["probabilities"]
+        risk_res = res["risk"]
+        risk_ans = str(risk_res["answer"])
+        risk_probs = risk_res["probabilities"]
 
         final_choice, corrected, was_raw_safe = select_move_with_guardrail(
             self.env, move_probs, raw_choice, bool(guardrail)
@@ -1166,12 +1143,12 @@ STUDIO_HTML = r"""<!DOCTYPE html>
             </div>
           </div>
 
-          <!-- Barra velocità e modalità tecnica -->
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:8px 10px;background:var(--bg-subtle);border-radius:8px;border:1px solid var(--border);font-size:12px;">
-            <label style="display:flex;align-items:center;gap:5px;font-weight:600;color:var(--primary-text);cursor:pointer;">
-              <input type="checkbox" id="chk-turbo-snake" checked style="accent-color:var(--primary);"/>
-              ⚡ Movimento Ultra-Veloce (Turbo 60fps)
-            </label>
+          <!-- Barra modalità tecnica 100% reale -->
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:8px 12px;background:var(--bg-subtle);border-radius:8px;border:1px solid var(--border);font-size:12px;">
+            <span style="display:inline-flex;align-items:center;gap:6px;font-weight:600;color:var(--primary-text);">
+              <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ecf8e;"></span>
+              Inferenza Reale su GPU (GTX 1650)
+            </span>
             <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
               <input type="checkbox" id="chk-snake-gr" checked style="accent-color:var(--primary);"/>
               🛡️ Guard-rail
@@ -1182,8 +1159,8 @@ STUDIO_HTML = r"""<!DOCTYPE html>
               <option value="solo sensori">Solo Sensori</option>
             </select>
             <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
-              <span> Passo:</span>
-              <input type="range" id="rng-snake-ms" min="40" max="600" step="20" value="90" style="width:75px;"/>
+              <span>Ritardo:</span>
+              <input type="range" id="rng-snake-ms" min="50" max="600" step="25" value="100" style="width:75px;"/>
             </div>
           </div>
 
