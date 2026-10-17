@@ -1,0 +1,7 @@
+scenario_id,title,spark_lat_ms,rizzo_lat_ms,speedup_x,rizzo_tokens,spark_tokens,rizzo_tok_s,rizzo_valid_json
+1_cybersecurity_triage,Incident Triage Cybersecurity & Cloud,1676.1,11876.7,7.09,65,0,5.5,True
+2_legal_contract_negations,Analisi Contrattuale con Negazioni Annidate,1899.6,12879.0,6.78,65,0,5.0,True
+3_medical_triage_urgency,Triage Sanitario & Rischio Clinico Acuto,1897.0,11968.0,6.31,65,0,5.4,True
+4_snake_spatial_trap,Closed-Loop Snake: Rilevamento Trappola Spaziale,1870.1,11601.3,6.2,65,0,5.6,True
+5_credit_risk_evaluation,Valutazione Rischio Credito & Affidabilita Bancaria,2346.6,11664.6,4.97,65,0,5.6,True
+6_customer_sentiment_sarcasm,Customer Sentiment con Sarcasmo & Intento di Churn,1822.7,11973.2,6.57,65,0,5.4,True

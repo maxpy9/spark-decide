@@ -1,0 +1,234 @@
+{
+  "benchmark_date": "2026-10-17 23:04:29",
+  "hardware": "NVIDIA GeForce GTX 1650 (4.0 GB VRAM)",
+  "precision": "4-bit NF4 Double-Quant + FP32 Compute",
+  "avg_spark_latency_ms": 1918.7,
+  "avg_rizzo_latency_ms": 11993.8,
+  "overall_speedup_factor": 6.25,
+  "total_tokens_spark": 0,
+  "total_tokens_rizzo": 390,
+  "scenarios": [
+    {
+      "scenario_id": "1_cybersecurity_triage",
+      "title": "Incident Triage Cybersecurity & Cloud",
+      "spark_latency_ms": 1676.1,
+      "rizzo_latency_ms": 11876.7,
+      "speedup_factor": 7.09,
+      "spark_tokens_generated": 0,
+      "rizzo_tokens_generated": 65,
+      "rizzo_tok_per_sec": 5.5,
+      "rizzo_json_direct_valid": true,
+      "spark_answers": {
+        "severita": "media",
+        "richiede_isolamento": false,
+        "team_competente": "soc_security"
+      },
+      "spark_confidences": {
+        "severita": 0.4829,
+        "richiede_isolamento": 0.9733,
+        "team_competente": 0.9262
+      },
+      "spark_entropy_bits": {
+        "severita": 1.394,
+        "richiede_isolamento": 0.178,
+        "team_competente": 0.438
+      },
+      "spark_margins": {
+        "severita": 0.0803,
+        "richiede_isolamento": 0.9466,
+        "team_competente": 0.8693
+      },
+      "rizzo_raw_text": "{\n  \"severita\": \"media\",\n  \"richiede_isolamento\": false,\n  \"team_competente\": \"soc_security\"\n}",
+      "rizzo_parsed": {
+        "severita": "media",
+        "richiede_isolamento": false,
+        "team_competente": "soc_security"
+      }
+    },
+    {
+      "scenario_id": "2_legal_contract_negations",
+      "title": "Analisi Contrattuale con Negazioni Annidate",
+      "spark_latency_ms": 1899.6,
+      "rizzo_latency_ms": 12879.0,
+      "speedup_factor": 6.78,
+      "spark_tokens_generated": 0,
+      "rizzo_tokens_generated": 65,
+      "rizzo_tok_per_sec": 5.0,
+      "rizzo_json_direct_valid": true,
+      "spark_answers": {
+        "fornitore_inadempiente": false,
+        "risarcimento_dovuto": "penale_giornaliera",
+        "rischio_contenzioso": "2"
+      },
+      "spark_confidences": {
+        "fornitore_inadempiente": 0.6469,
+        "risarcimento_dovuto": 0.5079,
+        "rischio_contenzioso": 0.4243
+      },
+      "spark_entropy_bits": {
+        "fornitore_inadempiente": 0.937,
+        "risarcimento_dovuto": 1.219,
+        "rischio_contenzioso": 1.502
+      },
+      "spark_margins": {
+        "fornitore_inadempiente": 0.2938,
+        "risarcimento_dovuto": 0.0613,
+        "rischio_contenzioso": 0.0313
+      },
+      "rizzo_raw_text": "{\n  \"forniture_inadempiente\": true,\n  \"risarcimento_dovuto\": \"nessuna_penale\",\n  \"rischio_contenzioso\": 2\n}",
+      "rizzo_parsed": {
+        "forniture_inadempiente": true,
+        "risarcimento_dovuto": "nessuna_penale",
+        "rischio_contenzioso": 2
+      }
+    },
+    {
+      "scenario_id": "3_medical_triage_urgency",
+      "title": "Triage Sanitario & Rischio Clinico Acuto",
+      "spark_latency_ms": 1897.0,
+      "rizzo_latency_ms": 11968.0,
+      "speedup_factor": 6.31,
+      "spark_tokens_generated": 0,
+      "rizzo_tokens_generated": 65,
+      "rizzo_tok_per_sec": 5.4,
+      "rizzo_json_direct_valid": true,
+      "spark_answers": {
+        "codice_triage": "rosso",
+        "sospetta_sindrome_coronarica": true,
+        "livello_cure_richiesto": "2"
+      },
+      "spark_confidences": {
+        "codice_triage": 0.7838,
+        "sospetta_sindrome_coronarica": 0.8819,
+        "livello_cure_richiesto": 0.777
+      },
+      "spark_entropy_bits": {
+        "codice_triage": 0.842,
+        "sospetta_sindrome_coronarica": 0.524,
+        "livello_cure_richiesto": 0.898
+      },
+      "spark_margins": {
+        "codice_triage": 0.5855,
+        "sospetta_sindrome_coronarica": 0.7638,
+        "livello_cure_richiesto": 0.586
+      },
+      "rizzo_raw_text": "{\n  \"codice_triage\": \"rosso\",\n  \"sospetta_sindrome_coronarica\": true,\n  \"livello_cure_richiesto\": \"2\"\n}",
+      "rizzo_parsed": {
+        "codice_triage": "rosso",
+        "sospetta_sindrome_coronarica": true,
+        "livello_cure_richiesto": "2"
+      }
+    },
+    {
+      "scenario_id": "4_snake_spatial_trap",
+      "title": "Closed-Loop Snake: Rilevamento Trappola Spaziale",
+      "spark_latency_ms": 1870.1,
+      "rizzo_latency_ms": 11601.3,
+      "speedup_factor": 6.2,
+      "spark_tokens_generated": 0,
+      "rizzo_tokens_generated": 65,
+      "rizzo_tok_per_sec": 5.6,
+      "rizzo_json_direct_valid": true,
+      "spark_answers": {
+        "move": "up",
+        "pericolo_imminente": true,
+        "valutazione_rischio": "2"
+      },
+      "spark_confidences": {
+        "move": 0.9863,
+        "pericolo_imminente": 0.8243,
+        "valutazione_rischio": 0.9097
+      },
+      "spark_entropy_bits": {
+        "move": 0.125,
+        "pericolo_imminente": 0.671,
+        "valutazione_rischio": 0.522
+      },
+      "spark_margins": {
+        "move": 0.9798,
+        "pericolo_imminente": 0.6486,
+        "valutazione_rischio": 0.8513
+      },
+      "rizzo_raw_text": "{\n  \"move\": \"up\",\n  \"pericolo_imminente\": false,\n  \"valutazione_rischio\": 0\n}",
+      "rizzo_parsed": {
+        "move": "up",
+        "pericolo_imminente": false,
+        "valutazione_rischio": 0
+      }
+    },
+    {
+      "scenario_id": "5_credit_risk_evaluation",
+      "title": "Valutazione Rischio Credito & Affidabilita Bancaria",
+      "spark_latency_ms": 2346.6,
+      "rizzo_latency_ms": 11664.6,
+      "speedup_factor": 4.97,
+      "spark_tokens_generated": 0,
+      "rizzo_tokens_generated": 65,
+      "rizzo_tok_per_sec": 5.6,
+      "rizzo_json_direct_valid": true,
+      "spark_answers": {
+        "delibera_credito": "accordato",
+        "rischio_insolvenza_elevato": false,
+        "merito_creditizio_score": "1"
+      },
+      "spark_confidences": {
+        "delibera_credito": 0.6041,
+        "rischio_insolvenza_elevato": 0.5987,
+        "merito_creditizio_score": 0.6102
+      },
+      "spark_entropy_bits": {
+        "delibera_credito": 1.294,
+        "rischio_insolvenza_elevato": 0.972,
+        "merito_creditizio_score": 1.312
+      },
+      "spark_margins": {
+        "delibera_credito": 0.3098,
+        "rischio_insolvenza_elevato": 0.1974,
+        "merito_creditizio_score": 0.3403
+      },
+      "rizzo_raw_text": "{\n  \"delibera_credito\": \"accordato\",\n  \"rischio_insolvenza_elevato\": false,\n  \"merito_creditizio_score\": \"2\"\n}",
+      "rizzo_parsed": {
+        "delibera_credito": "accordato",
+        "rischio_insolvenza_elevato": false,
+        "merito_creditizio_score": "2"
+      }
+    },
+    {
+      "scenario_id": "6_customer_sentiment_sarcasm",
+      "title": "Customer Sentiment con Sarcasmo & Intento di Churn",
+      "spark_latency_ms": 1822.7,
+      "rizzo_latency_ms": 11973.2,
+      "speedup_factor": 6.57,
+      "spark_tokens_generated": 0,
+      "rizzo_tokens_generated": 65,
+      "rizzo_tok_per_sec": 5.4,
+      "rizzo_json_direct_valid": true,
+      "spark_answers": {
+        "sentiment_effettivo": "fortemente_negativo",
+        "intenzione_abbandono": true,
+        "livello_escalation": "2"
+      },
+      "spark_confidences": {
+        "sentiment_effettivo": 0.7936,
+        "intenzione_abbandono": 0.8796,
+        "livello_escalation": 0.8878
+      },
+      "spark_entropy_bits": {
+        "sentiment_effettivo": 0.913,
+        "intenzione_abbandono": 0.531,
+        "livello_escalation": 0.607
+      },
+      "spark_margins": {
+        "sentiment_effettivo": 0.6463,
+        "intenzione_abbandono": 0.7592,
+        "livello_escalation": 0.8102
+      },
+      "rizzo_raw_text": "{\n  \"sentiment_effettivo\": \"fortemente_negativo\",\n  \"intenzione_abbandono\": true,\n  \"livello_escalation\": 2\n}",
+      "rizzo_parsed": {
+        "sentiment_effettivo": "fortemente_negativo",
+        "intenzione_abbandono": true,
+        "livello_escalation": 2
+      }
+    }
+  ]
+}
