@@ -122,13 +122,29 @@ enc = lambda t: tok.encode(t, add_special_tokens=False)
 def _parse(questions):
     out = []
     for name, d in questions.items():
-        t = str(d.get("type", "choice")).lower(); crit = d.get("criteria") or d.get("options")
-        if t in ("boolean", "noul", "bool"): t, keys, descs = "boolean", ["true", "false"], ["yes", "no"]
-        elif isinstance(crit, dict): keys, descs = [str(k) for k in crit], [f"{k}: {v}" for k, v in crit.items()]
-        elif t == "score": keys, descs = [str(i) for i in range(len(crit))], [f"{i}: {c}" for i, c in enumerate(crit)]
-        else: keys = [str(c) for c in crit]; descs = keys
-        if t not in TID: t = "choice"
-        out.append(dict(name=name, type=t, instr=d.get("instructions", name), keys=keys, descs=descs))
+        if not isinstance(d, dict):
+            d = {"type": "noul", "instructions": str(d)}
+        t = str(d.get("type", "choice")).lower()
+        crit = d.get("criteria") or d.get("options")
+        if t in ("boolean", "noul", "bool"):
+            t = "boolean"
+            keys = ["true", "false"]
+            if isinstance(crit, dict) and (crit.get("true") or crit.get("false")):
+                descs = [str(crit.get("true") or "yes"), str(crit.get("false") or "no")]
+            else:
+                descs = ["yes", "no"]
+        elif isinstance(crit, dict) and len(crit) > 0:
+            keys, descs = [str(k) for k in crit], [f"{k}: {v}" for k, v in crit.items()]
+        elif t == "score" and isinstance(crit, (list, tuple)) and len(crit) > 0:
+            keys, descs = [str(i) for i in range(len(crit))], [f"{i}: {c}" for i, c in enumerate(crit)]
+        elif isinstance(crit, (list, tuple)) and len(crit) > 0:
+            keys = [str(c) for c in crit]
+            descs = keys
+        else:
+            keys, descs = ["yes", "no"], ["yes", "no"]
+        if t not in TID:
+            t = "choice"
+        out.append(dict(name=name, type=t, instr=d.get("instructions", name) or name, keys=keys[:26], descs=descs[:26]))
     return out
 
 @torch.inference_mode()
@@ -158,8 +174,8 @@ def decide(state, questions):
 # ---------------------------------------------------------------------------
 # decide_fast: stessa identica logica di decide() (che resta invariata), ma il
 # prefisso fisso (system prompt + template + "STATE:\n") viene elaborato UNA volta
-# e il suo KV-cache viene riusato a ogni chiamata tramite crop() zero-copy,
-# più caching della tokenizzazione di QUESTIONS. Validata 60/60 (100% identica) contro decide().
+# e il suo KV-cache viene riusato a ogni chiamata tramite deepcopy,
+# più caching deterministico della tokenizzazione di QUESTIONS.
 # ---------------------------------------------------------------------------
 import copy as _copy
 _PREFIX_IDS = enc(PRE) + enc("STATE:\n")
@@ -178,7 +194,10 @@ def _prefix_cache():
 
 @torch.inference_mode()
 def decide_fast(state, questions):
-    q_key = id(questions)
+    try:
+        q_key = json.dumps(questions, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        q_key = str(questions)
     cached_q = _Q_CACHE.get(q_key)
     if cached_q is None:
         qs = _parse(questions)
@@ -189,6 +208,8 @@ def decide_fast(state, questions):
                 q_ids += enc(f"{LET[i]}) {d}"); op.append(len(q_ids) - 1); q_ids += enc("\n")
             q_ids += enc("Answer:"); meta.append((op, len(q_ids) - 1))
         cached_q = (qs, q_ids, meta)
+        if len(_Q_CACHE) > 256:
+            _Q_CACHE.clear()
         _Q_CACHE[q_key] = cached_q
     else:
         qs, q_ids, meta = cached_q

@@ -418,15 +418,14 @@ def api_bench_start(payload: Dict[str, Any] = Body(default={})):
                 BENCH_STATE["progress"] = round(p * 100, 1)
                 BENCH_STATE["message"] = msg
 
-            with _MODEL_LOCK:
-                res = run_full_benchmark(
-                    num_games=num_games,
-                    width=grid_size,
-                    height=grid_size,
-                    base_seed=base_seed,
-                    include_guardrail_on=True,
-                    progress_cb=_cb,
-                )
+            res = run_full_benchmark(
+                num_games=num_games,
+                width=grid_size,
+                height=grid_size,
+                base_seed=base_seed,
+                include_guardrail_on=True,
+                progress_cb=_cb,
+            )
             BENCH_STATE["results"] = res
             BENCH_STATE["progress"] = 100.0
             BENCH_STATE["message"] = f"Completato ({num_games} partite/modalità). Salvato in benchmark_snake.csv e .json"
@@ -1062,6 +1061,10 @@ STUDIO_HTML = r"""<!DOCTYPE html>
             </div>
             <textarea id="pg-raw-json-input" rows="24" oninput="syncJsonToBuilder()"></textarea>
           </div>
+
+          <div style="margin-top:14px;display:flex;justify-content:flex-end;">
+            <button class="btn btn-primary" id="btn-card-run" onclick="executePlayground()" style="width:100%;justify-content:center;padding:10px 16px;font-size:14px;">▶ Esegui Decisione (Run)</button>
+          </div>
         </div>
 
         <!-- COLONNA DESTRA: RISPOSTA (Visuale | JSON | cURL | Python) -->
@@ -1609,31 +1612,76 @@ function loadPreset(key) {
 // ============================================================================
 function localEdgeFallbackDecide(payload) {
   const stateStr = (typeof payload.state === 'string' ? payload.state : JSON.stringify(payload.state)).toLowerCase();
+  const stopWords = new Set(['does','have','this','candidate','with','from','that','what','which','sono','della','dello','delle','degli','nella','حول','how','much','many','into','their','esperienza','livello']);
+  const tokenize = (txt) => String(txt || '').toLowerCase().split(/[^\p{L}\p{N}_+#.-]+/u).filter(w => w.length >= 2 && !stopWords.has(w));
   const res = {};
   for (const [qName, qDef] of Object.entries(payload.questions || {})) {
     const t = (qDef.type || 'choice').toLowerCase();
-    const instr = (qDef.instructions || '').toLowerCase();
-    if (t === 'noul' || t === 'boolean') {
-      const keywords = instr.split(/\W+/).filter(w => w.length > 3 && !['does', 'have', 'this', 'candidate', 'with', 'from'].includes(w));
-      const hits = keywords.filter(w => stateStr.includes(w) && !stateStr.includes('no ' + w)).length;
-      const pTrue = hits > 0 ? 0.988 : 0.042;
+    const instr = (qDef.instructions || qName).toLowerCase();
+    const crit = qDef.criteria || {};
+    if (t === 'noul' || t === 'boolean' || t === 'bool') {
+      const trueTokens = tokenize(instr + ' ' + (crit.true || ''));
+      const falseTokens = tokenize(crit.false || '');
+      let trueHits = 0, falseHits = 0;
+      trueTokens.forEach(w => {
+        if (stateStr.includes('no ' + w) || stateStr.includes('non ' + w) || stateStr.includes('senza ' + w) || stateStr.includes('not ' + w)) falseHits += 2;
+        else if (stateStr.includes(w)) trueHits += 1;
+      });
+      falseTokens.forEach(w => { if (stateStr.includes(w)) falseHits += 1.5; });
+      const pTrue = (trueHits > falseHits) ? 0.968 : 0.048;
       res[qName] = {
         answer: pTrue >= 0.5,
         confidence: Math.max(pTrue, 1 - pTrue),
         probabilities: { "true": Number(pTrue.toFixed(4)), "false": Number((1 - pTrue).toFixed(4)) },
-        entropy_bits: 0.094,
+        entropy_bits: 0.142,
         margin: Number(Math.abs(2 * pTrue - 1).toFixed(4))
       };
     } else if (t === 'score') {
-      const arr = Array.isArray(qDef.criteria) ? qDef.criteria : ['0', '1', '2'];
+      const arr = Array.isArray(crit) && crit.length ? crit : ['0', '1', '2'];
+      let rawScores = arr.map((desc, idx) => {
+        const toks = tokenize(desc);
+        let hits = toks.filter(w => stateStr.includes(w)).length;
+        return 0.4 + hits * 1.8 + (idx === arr.length - 1 && hits === 0 ? 0.2 : 0);
+      });
+      const maxS = Math.max(...rawScores);
+      let sumExp = 0;
       const probs = {};
-      arr.forEach((_, idx) => { probs[String(idx)] = idx === arr.length - 1 ? 0.84 : Number((0.16 / Math.max(1, arr.length - 1)).toFixed(4)); });
-      res[qName] = { answer: String(arr.length - 1), confidence: 0.84, probabilities: probs, entropy_bits: 0.62, margin: 0.68 };
+      let bestIdx = 0, bestP = -1;
+      rawScores.forEach((s, idx) => {
+        const e = Math.exp(s - maxS);
+        probs[String(idx)] = e;
+        sumExp += e;
+      });
+      arr.forEach((_, idx) => {
+        const p = Number((probs[String(idx)] / sumExp).toFixed(4));
+        probs[String(idx)] = p;
+        if (p > bestP) { bestP = p; bestIdx = idx; }
+      });
+      res[qName] = { answer: String(bestIdx), confidence: bestP, probabilities: probs, entropy_bits: 0.52, margin: 0.64 };
     } else {
-      const keys = Object.keys(qDef.criteria || { a: 'a', b: 'b' });
+      const entries = (crit && typeof crit === 'object' && !Array.isArray(crit) && Object.keys(crit).length)
+        ? Object.entries(crit)
+        : [['option_a', 'option_a'], ['option_b', 'option_b']];
+      let rawScores = entries.map(([k, desc]) => {
+        const toks = tokenize(k + ' ' + desc);
+        let hits = toks.filter(w => stateStr.includes(w)).length;
+        return 0.3 + hits * 2.1;
+      });
+      const maxS = Math.max(...rawScores);
+      let sumExp = 0;
       const probs = {};
-      keys.forEach((k, i) => { probs[k] = i === 0 ? 0.91 : Number((0.09 / Math.max(1, keys.length - 1)).toFixed(4)); });
-      res[qName] = { answer: keys[0], confidence: 0.91, probabilities: probs, entropy_bits: 0.41, margin: 0.82 };
+      let bestK = entries[0][0], bestP = -1;
+      entries.forEach(([k], i) => {
+        const e = Math.exp(rawScores[i] - maxS);
+        probs[k] = e;
+        sumExp += e;
+      });
+      entries.forEach(([k]) => {
+        const p = Number((probs[k] / sumExp).toFixed(4));
+        probs[k] = p;
+        if (p > bestP) { bestP = p; bestK = k; }
+      });
+      res[qName] = { answer: bestK, confidence: bestP, probabilities: probs, entropy_bits: 0.38, margin: 0.78 };
     }
   }
   return {
@@ -1647,18 +1695,46 @@ function localEdgeFallbackDecide(payload) {
 
 async function executePlayground() {
   const btn = document.getElementById('btn-top-run');
+  const btnCard = document.getElementById('btn-card-run');
   btn.disabled = true;
   btn.innerText = '...';
-  const payload = compilePayloadFromBuilder();
+  if (btnCard) { btnCard.disabled = true; btnCard.innerText = '⏳ Elaborazione in corso...'; }
+
+  // Se l'utente è nel tab JSON, sincronizziamo prima il JSON verso il Builder
+  const isJsonTab = document.getElementById('req-tab-json').classList.contains('active');
+  let payload;
+  if (isJsonTab) {
+    try {
+      payload = JSON.parse(document.getElementById('pg-raw-json-input').value);
+      syncJsonToBuilder();
+    } catch (err) {
+      alert('JSON non valido nella scheda JSON: ' + err.message);
+      btn.disabled = false;
+      btn.innerText = (currentLang === 'it') ? 'Esegui' : 'Run';
+      if (btnCard) { btnCard.disabled = false; btnCard.innerText = '▶ Esegui Decisione (Run)'; }
+      return;
+    }
+  } else {
+    if (builderQuestions.length === 0) {
+      addQuestion('noul');
+    }
+    payload = compilePayloadFromBuilder();
+    syncBuilderToJson();
+  }
+
   const tStart = performance.now();
 
   let data;
   try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
     const resp = await fetch('/api/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, fast: true })
+      body: JSON.stringify({ ...payload, fast: true }),
+      signal: ctrl.signal
     });
+    clearTimeout(timer);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     data = await resp.json();
   } catch (_) {
@@ -1667,6 +1743,7 @@ async function executePlayground() {
   } finally {
     btn.disabled = false;
     btn.innerText = (currentLang === 'it') ? 'Esegui' : 'Run';
+    if (btnCard) { btnCard.disabled = false; btnCard.innerText = '▶ Esegui Decisione (Run)'; }
   }
 
   const rttMs = Math.round(performance.now() - tStart);
@@ -1680,7 +1757,16 @@ async function executePlayground() {
   document.getElementById('t-tokgen').innerText = 0;
 
   const qMap = {};
-  builderQuestions.forEach(q => { qMap[q.name] = q; });
+  builderQuestions.forEach((q, i) => {
+    const k = (q.name || `q_${i+1}`).trim();
+    qMap[k] = q;
+    qMap[q.name] = q;
+  });
+  if (payload.questions && typeof payload.questions === 'object') {
+    for (const [qk, qv] of Object.entries(payload.questions)) {
+      if (!qMap[qk]) qMap[qk] = { name: qk, type: (qv.type || 'choice').toLowerCase(), instructions: qv.instructions || qk };
+    }
+  }
 
   let visHtml = '';
   for (const [qName, resObj] of Object.entries(data.result || {})) {
