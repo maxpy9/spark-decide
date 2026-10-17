@@ -2,11 +2,11 @@
   <img src="spark_decide_logo.png" alt="Spark-Decide Mascot Logo" width="180" style="border-radius: 18px;"/>
 </p>
 
-# ⚡ Spark-Decide — Decision Engine & Supabase Studio Playground
+# ⚡ Spark-Decide — Decision Engine & Studio Playground
 
 **Spark-Decide** è un motore decisionale strutturato a singolo forward pass con **DecisionHead** calibrata, progettato per rispondere simultaneamente a domande multi-tipo (`choice`, `boolean`/`noul`, `score`) a partire da uno stato (`STATE` testuale o JSON) restituendo risposte, confidenza e distribuzioni di probabilità calibrate.
 
-Include uno **Studio Web in stile Supabase** (`http://127.0.0.1:7860`) che si avvia automaticamente eseguendo il modello per:
+Include **Spark-Decide Studio** (`http://127.0.0.1:7860`), un'interfaccia web interattiva che si avvia automaticamente eseguendo il modello per:
 1. **🐍 Testarlo in tempo reale su Snake** (*Snake Live Arena* con telemetria, barre di probabilità, `danger`, `risk` e Guard-rail).
 2. **⚡ Usarlo su qualsiasi task decisionale** (*Decision Studio* interattivo + REST API `POST /api/decide`).
 3. **📊 Eseguire la Benchmark Suite** multi-modalità contro agenti baseline (*Greedy* e *Casuale-Sicuro*).
@@ -26,10 +26,10 @@ Il modello **Spark-Decide** è stato sviluppato basandosi sull'architettura foun
 
 ## 📁 Struttura del Repository
 
-- [`SparkDecide_Setup.exe`](SparkDecide_Setup.exe) — **Installer & Launcher nativo Windows (GUI)** con icona della mascotte: scarica e configura automaticamente Python 3.11 (se assente), l'ambiente virtuale `.venv`, PyTorch CUDA 12.4 + librerie AI, tutti i pesi dei modelli ([`setup_models.py`](setup_models.py)) e avvia il **Supabase Studio** su `http://127.0.0.1:7860`.
-- [`spark_decide.py`](spark_decide.py) — Motore principale **Spark-Decide**: espone `decide(state, questions)` e `decide_fast(state, questions)`. Se eseguito direttamente (`python spark_decide.py`), esegue il test rapido e avvia automaticamente il playground **Supabase Studio** su `http://127.0.0.1:7860`.
-- [`snake_playground.py`](snake_playground.py) — Server **FastAPI + Supabase Studio Web App** su `http://127.0.0.1:7860` con *Snake Live Arena*, *Decision Studio*, *Benchmark Suite* ed endpoint REST `POST /api/decide`.
-- [`setup_models.py`](setup_models.py) — Script automatico che verifica e scarica i pesi foundational, estrae l'adapter `models/spark-decide` e applica le patch 4-bit NF4.
+- [`SparkDecide_Setup.exe`](SparkDecide_Setup.exe) — **Installer & Launcher nativo Windows (GUI)** con icona della mascotte: scarica e configura automaticamente Python 3.11 (se assente), l'ambiente virtuale `.venv`, PyTorch CUDA 12.4 + librerie AI, il modello **Spark-Decide** da questa repo GitHub e **Rizzo Flow** da HuggingFace ([`setup_models.py`](setup_models.py)), avviando **Spark-Decide Studio** su `http://127.0.0.1:7860`.
+- [`spark_decide.py`](spark_decide.py) — Motore principale **Spark-Decide**: espone `decide(state, questions)` e `decide_fast(state, questions)`. Se eseguito direttamente (`python spark_decide.py`), esegue il test rapido e avvia automaticamente **Spark-Decide Studio** su `http://127.0.0.1:7860`.
+- [`snake_playground.py`](snake_playground.py) — Server **FastAPI + Spark-Decide Studio Web App** su `http://127.0.0.1:7860` con *Snake Live Arena*, *Decision Studio*, *Benchmark Suite* ed endpoint REST `POST /api/decide`.
+- [`setup_models.py`](setup_models.py) — Script automatico che scarica il modello **Spark-Decide** da GitHub, il modello base **Rizzo Flow** da HuggingFace e applica le patch 4-bit NF4.
 - [`snake_env.py`](snake_env.py) — Motore completo di Snake (griglia NxN configurabile, seed riproducibile, rilevamento collisioni muro/corpo e inversione 180°, sensori direzionali con flood-fill `reachable_space`, griglia ASCII e policy baseline `policy_greedy` / `policy_random_safe`).
 - [`benchmark.py`](benchmark.py) — Suite di benchmark automatico multi-modalità (`sensori + griglia`, `solo sensori`, `solo griglia ASCII`, Guard-rail OFF/ON + baselines) con esportazione in `benchmark_snake.csv` e `benchmark_snake.json`.
 - [`requirements.txt`](requirements.txt) — Dipendenze Python del progetto.
@@ -39,7 +39,7 @@ Il modello **Spark-Decide** è stato sviluppato basandosi sull'architettura foun
 ## 🚀 Avvio Rapido (Con Eseguibile `.exe` o Terminale)
 
 ### Opzione A: Doppio clic sull'eseguibile Windows (Consigliato)
-Fai doppio clic su **[`SparkDecide_Setup.exe`](SparkDecide_Setup.exe)** e premi il pulsante verde **"⚡ Scarica Tutto (se mancante) & Avvia Spark-Decide"**: l'eseguibile verificherà/scaricherà automaticamente tutto il necessario e aprirà il Playground su `http://127.0.0.1:7860`.
+Fai doppio clic su **[`SparkDecide_Setup.exe`](SparkDecide_Setup.exe)** e premi il pulsante verde **"⚡ Scarica Tutto (GitHub + HF) & Avvia Spark-Decide"**: l'eseguibile verificherà/scaricherà automaticamente tutto il necessario e aprirà **Spark-Decide Studio** su `http://127.0.0.1:7860`.
 
 ### Opzione B: Da Terminale PowerShell
 ```powershell
@@ -51,7 +51,7 @@ python spark_decide.py
 Il comando:
 1. Carica **Spark-Decide** su GPU (`CUDA 4-bit NF4 + KV-Cache`).
 2. Esegue il test di verifica iniziale in console.
-3. Avvia e apre automaticamente il **Playground in stile Supabase** su **[http://127.0.0.1:7860](http://127.0.0.1:7860)** *(usa `--no-browser` per non aprire il browser o `--test-only` per eseguire solo il test da terminale)*.
+3. Avvia e apre automaticamente **Spark-Decide Studio** su **[http://127.0.0.1:7860](http://127.0.0.1:7860)** *(usa `--no-browser` per non aprire il browser o `--test-only` per eseguire solo il test da terminale)*.
 
 ---
 

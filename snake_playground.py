@@ -364,12 +364,12 @@ def api_download_exe():
     return JSONResponse({"error": "Eseguibile non trovato"}, status_code=404)
 
 
-SUPABASE_STUDIO_HTML = r"""<!DOCTYPE html>
+STUDIO_HTML = r"""<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Spark-Decide Studio — Supabase Edition</title>
+<title>Spark-Decide Studio</title>
 <link rel="icon" type="image/png" href="/logo.png"/>
 <style>
   :root {
@@ -558,7 +558,7 @@ SUPABASE_STUDIO_HTML = r"""<!DOCTYPE html>
   .tab-view { display: none; }
   .tab-view.active { display: block; }
 
-  /* SUPABASE CARDS & CONTROLS */
+  /* CARDS & CONTROLS */
   .panel {
     background: var(--bg-panel);
     border: 1px solid var(--border);
@@ -756,7 +756,7 @@ SUPABASE_STUDIO_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 
-  <!-- SIDEBAR SUPABASE -->
+  <!-- SIDEBAR -->
   <aside class="sidebar">
     <div class="brand-header">
       <img src="/logo.png" alt="Spark-Decide Mascot" style="width:36px;height:36px;border-radius:8px;border:1px solid var(--brand);box-shadow:0 0 12px rgba(62,207,142,0.3);object-fit:cover;"/>
@@ -1607,14 +1607,14 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return SUPABASE_STUDIO_HTML
+    return STUDIO_HTML
 
 
 def launch_server(host: str = "0.0.0.0", port: int = 7860, open_browser: bool = True):
     ensure_warmup()
     url = f"http://127.0.0.1:{port}"
     print("\n============================================================")
-    print(f"[Spark-Studio] Supabase Studio attivo su: {url}")
+    print(f"[Spark-Decide] Studio attivo su: {url}")
     print("============================================================\n")
     if open_browser and os.environ.get("SPARK_NO_BROWSER", "0") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

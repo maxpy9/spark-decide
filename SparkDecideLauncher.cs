@@ -27,7 +27,7 @@ namespace SparkDecideInstaller
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
 
-            this.Text = "Spark-Decide — Installer & Supabase Studio Launcher";
+            this.Text = "Spark-Decide — Installer & Studio Launcher";
             this.Size = new Size(760, 540);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(18, 18, 18);
@@ -68,7 +68,7 @@ namespace SparkDecideInstaller
             headerPanel.Controls.Add(titleLbl);
 
             Label subLbl = new Label();
-            subLbl.Text = "Scarica Spark-Decide da GitHub (maxpy9/spark-decide) + Rizzo Flow da HuggingFace e avvia Supabase Studio";
+            subLbl.Text = "Scarica Spark-Decide da GitHub (maxpy9/spark-decide) + Rizzo Flow da HuggingFace e avvia Spark-Decide Studio";
             subLbl.Font = new Font("Segoe UI", 9f, FontStyle.Regular);
             subLbl.ForeColor = Color.FromArgb(160, 160, 160);
             subLbl.AutoSize = true;
@@ -321,8 +321,8 @@ namespace SparkDecideInstaller
                     RunCommand(venvPy, "-u \"" + setupScript + "\"");
                 }
 
-                // 4. Avvia il Server Spark-Decide Supabase Studio
-                SetStatus("Passo 5/5: Avvio di Spark-Decide Supabase Studio su http://127.0.0.1:7860...", 95);
+                // 4. Avvia il Server Spark-Decide Studio
+                SetStatus("Passo 5/5: Avvio di Spark-Decide Studio su http://127.0.0.1:7860...", 95);
                 KillServer();
 
                 ProcessStartInfo psi = new ProcessStartInfo();
