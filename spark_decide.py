@@ -6,7 +6,7 @@ ROOT_DIR = os.environ.get("SPARK_ROOT_DIR", ".")
 SAVED = os.path.join(ROOT_DIR, "models", "spark-decide")
 BASE_ID = os.path.join(ROOT_DIR, "models", "rizzo-flow")
 MERGED_DIR = os.path.join(ROOT_DIR, "models", "spark-decide-merged")
-MAXLEN = 2048
+MAXLEN = int(os.environ.get("SPARK_MAX_CONTEXT_LENGTH", "1900"))
 if torch.cuda.is_available():
     DEV = "cuda"; DT = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 elif torch.backends.mps.is_available():
@@ -149,6 +149,19 @@ def _parse(questions):
     return out
 
 @torch.inference_mode()
+def _eval_tokens_direct(s_ids, qs, meta, t_ids, q_ids, p_ids, h_ids):
+    off = len(h_ids) + len(s_ids) + len(t_ids)
+    full_ids = torch.tensor([h_ids + s_ids + t_ids + q_ids + p_ids], device=DEV)
+    h = _inner(input_ids=full_ids, use_cache=False).last_hidden_state[0]
+    logits = {}
+    for q, (op, ep) in zip(qs, meta):
+        n = len(q["keys"]); op_cur = [p + off for p in op]; ep_cur = ep + off
+        ll = F.linear(h[ep_cur].to(_W.dtype), _W[LET_IDS[:n]]).float()
+        z = head(h[op_cur].float(), h[ep_cur].float(), ll, torch.tensor(TID[q["type"]], device=DEV))
+        logits[q["name"]] = z
+    return logits
+
+@torch.inference_mode()
 def decide(state, questions):
     qs = _parse(questions); state = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
     q_ids, meta = [], []
@@ -158,16 +171,40 @@ def decide(state, questions):
             q_ids += enc(f"{LET[i]}) {d}"); op.append(len(q_ids) - 1); q_ids += enc("\n")
         q_ids += enc("Answer:"); meta.append((op, len(q_ids) - 1))
     h_ids, t_ids, p_ids = enc(PRE) + enc("STATE:\n"), enc("\n\nQUESTIONS:"), enc(POST)
-    s_ids = enc(state)[:max(32, MAXLEN - len(h_ids) - len(t_ids) - len(q_ids) - len(p_ids))]
-    off = len(h_ids) + len(s_ids) + len(t_ids)
-    ids = torch.tensor([h_ids + s_ids + t_ids + q_ids + p_ids], device=DEV)
-    h = _inner(input_ids=ids, use_cache=False).last_hidden_state[0]   # modello già in DT: niente autocast (non supportato bene su MPS)
+    all_s_ids = enc(state)
+    overhead = len(h_ids) + len(t_ids) + len(q_ids) + len(p_ids)
+    max_single = max(256, MAXLEN - overhead)
+
+    if len(all_s_ids) <= max_single:
+        logits_dict = _eval_tokens_direct(all_s_ids, qs, meta, t_ids, q_ids, p_ids, h_ids)
+        res = {}
+        for q in qs:
+            z = logits_dict[q["name"]]
+            p = torch.softmax(z / TEMPS.get(q["type"], 1.0), -1).cpu().numpy(); k = q["keys"][int(p.argmax())]
+            res[q["name"]] = dict(answer=(k == "true") if q["type"] == "boolean" else k, confidence=round(float(p.max()), 4),
+                                  probabilities={kk: round(float(pp), 4) for kk, pp in zip(q["keys"], p)})
+        return res
+
+    stride = max(256, max_single - 512)
+    chunks = [all_s_ids[i:i + max_single] for i in range(0, len(all_s_ids), stride)]
+    all_logits = {q["name"]: [] for q in qs}
+    all_margins = {q["name"]: [] for q in qs}
+    for chunk in chunks:
+        c_logits = _eval_tokens_direct(chunk, qs, meta, t_ids, q_ids, p_ids, h_ids)
+        for q in qs:
+            z = c_logits[q["name"]]
+            p = torch.softmax(z / TEMPS.get(q["type"], 1.0), -1)
+            top2 = torch.topk(p, min(2, len(p))).values
+            m = (top2[0] - top2[1]).item() if len(top2) > 1 else top2[0].item()
+            all_logits[q["name"]].append(z)
+            all_margins[q["name"]].append(m)
     res = {}
-    for q, (op, ep) in zip(qs, meta):
-        n = len(q["keys"]); op = [p + off for p in op]; ep += off
-        ll = F.linear(h[ep].to(_W.dtype), _W[LET_IDS[:n]]).float()
-        z = head(h[op].float(), h[ep].float(), ll, torch.tensor(TID[q["type"]], device=DEV))
-        p = torch.softmax(z / TEMPS.get(q["type"], 1.0), -1).cpu().numpy(); k = q["keys"][int(p.argmax())]
+    for q in qs:
+        margins_t = torch.tensor(all_margins[q["name"]], dtype=torch.float32, device=DEV)
+        weights = torch.softmax(margins_t / 0.15, dim=0)
+        stacked = torch.stack(all_logits[q["name"]])
+        fused_z = (stacked * weights.unsqueeze(-1)).sum(dim=0)
+        p = torch.softmax(fused_z / TEMPS.get(q["type"], 1.0), -1).cpu().numpy(); k = q["keys"][int(p.argmax())]
         res[q["name"]] = dict(answer=(k == "true") if q["type"] == "boolean" else k, confidence=round(float(p.max()), 4),
                               probabilities={kk: round(float(pp), 4) for kk, pp in zip(q["keys"], p)})
     return res
@@ -194,6 +231,22 @@ def _prefix_cache():
     return _copy.deepcopy(_PREFIX_CACHE)
 
 @torch.inference_mode()
+def _eval_tokens_fast(s_chunk, qs, meta, t_ids, q_ids, p_ids, h_ids):
+    P = len(h_ids)
+    off = len(s_chunk) + len(t_ids)
+    rest = s_chunk + t_ids + q_ids + p_ids
+    ids = torch.tensor([rest], device=DEV)
+    h = _inner(input_ids=ids, past_key_values=_prefix_cache(), use_cache=True,
+               cache_position=torch.arange(P, P + len(rest), device=DEV)).last_hidden_state[0]
+    logits = {}
+    for q, (op, ep) in zip(qs, meta):
+        n = len(q["keys"]); op_cur = [p + off for p in op]; ep_cur = ep + off
+        ll = F.linear(h[ep_cur].to(_W.dtype), _W[LET_IDS[:n]]).float()
+        z = head(h[op_cur].float(), h[ep_cur].float(), ll, torch.tensor(TID[q["type"]], device=DEV))
+        logits[q["name"]] = z
+    return logits
+
+@torch.inference_mode()
 def decide_fast(state, questions):
     try:
         q_key = json.dumps(questions, sort_keys=True, ensure_ascii=False)
@@ -216,19 +269,46 @@ def decide_fast(state, questions):
         qs, q_ids, meta = cached_q
     state = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
     h_ids, t_ids, p_ids = _PREFIX_IDS, _T_IDS, _P_IDS
-    s_ids = enc(state)[:max(32, MAXLEN - len(h_ids) - len(t_ids) - len(q_ids) - len(p_ids))]
-    P = len(h_ids)
-    off = len(s_ids) + len(t_ids)
-    rest = s_ids + t_ids + q_ids + p_ids
-    ids = torch.tensor([rest], device=DEV)
-    h = _inner(input_ids=ids, past_key_values=_prefix_cache(), use_cache=True,
-               cache_position=torch.arange(P, P + len(rest), device=DEV)).last_hidden_state[0]
+    all_s_ids = enc(state)
+    overhead = len(h_ids) + len(t_ids) + len(q_ids) + len(p_ids)
+    max_single = max(256, MAXLEN - overhead)
+
+    # 1. Input normale o medio: forward pass diretto a singolo step (velocità massima inalterata)
+    if len(all_s_ids) <= max_single:
+        logits_dict = _eval_tokens_fast(all_s_ids, qs, meta, t_ids, q_ids, p_ids, h_ids)
+        res = {}
+        for q in qs:
+            z = logits_dict[q["name"]]
+            p = torch.softmax(z / TEMPS.get(q["type"], 1.0), -1).cpu().numpy(); k = q["keys"][int(p.argmax())]
+            res[q["name"]] = dict(answer=(k == "true") if q["type"] == "boolean" else k, confidence=round(float(p.max()), 4),
+                                  probabilities={kk: round(float(pp), 4) for kk, pp in zip(q["keys"], p)})
+        return res
+
+    # 2. Input ultra-lungo (> 8192 token): Hierarchical Window Chunking (Zero OOM)
+    stride = max(256, max_single - 512)
+    chunks = [all_s_ids[i:i + max_single] for i in range(0, len(all_s_ids), stride)]
+    all_logits = {q["name"]: [] for q in qs}
+    all_margins = {q["name"]: [] for q in qs}
+
+    for chunk in chunks:
+        c_logits = _eval_tokens_direct(chunk, qs, meta, t_ids, q_ids, p_ids, h_ids)
+        for q in qs:
+            z = c_logits[q["name"]]
+            p = torch.softmax(z / TEMPS.get(q["type"], 1.0), -1)
+            top2 = torch.topk(p, min(2, len(p))).values
+            m = (top2[0] - top2[1]).item() if len(top2) > 1 else top2[0].item()
+            all_logits[q["name"]].append(z)
+            all_margins[q["name"]].append(m)
+        if DEV == "cuda":
+            torch.cuda.empty_cache()
+
     res = {}
-    for q, (op, ep) in zip(qs, meta):
-        n = len(q["keys"]); op = [p + off for p in op]; ep += off
-        ll = F.linear(h[ep].to(_W.dtype), _W[LET_IDS[:n]]).float()
-        z = head(h[op].float(), h[ep].float(), ll, torch.tensor(TID[q["type"]], device=DEV))
-        p = torch.softmax(z / TEMPS.get(q["type"], 1.0), -1).cpu().numpy(); k = q["keys"][int(p.argmax())]
+    for q in qs:
+        margins_t = torch.tensor(all_margins[q["name"]], dtype=torch.float32, device=DEV)
+        weights = torch.softmax(margins_t / 0.15, dim=0)
+        stacked = torch.stack(all_logits[q["name"]])
+        fused_z = (stacked * weights.unsqueeze(-1)).sum(dim=0)
+        p = torch.softmax(fused_z / TEMPS.get(q["type"], 1.0), -1).cpu().numpy(); k = q["keys"][int(p.argmax())]
         res[q["name"]] = dict(answer=(k == "true") if q["type"] == "boolean" else k, confidence=round(float(p.max()), 4),
                               probabilities={kk: round(float(pp), 4) for kk, pp in zip(q["keys"], p)})
     return res

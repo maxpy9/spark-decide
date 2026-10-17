@@ -81,7 +81,9 @@ flowchart TD
 2. **Double-Quant NF4 per GPU Consumer ed Edge (≥ 4 GB VRAM)**:
    I pesi del modello sono caricati in memoria video occupando **~2.835 MB di VRAM** con precisione NF4 e computazione dequantizzata `float32` ad alta efficienza.
 3. **KV-Prefix Caching Zero-Copy**:
-   Il system prompt e la struttura fissa del prompt vengono elaborati una volta sola e riusati per ogni chiamata (`decide_fast`), portando il tempo di calcolo a circa **1,1 secondi** su GPU consumer per pacchetti multi-domanda.
+   Il system prompt e la struttura fissa del prompt vengono elaborati una volta sola e riusati per ogni chiamata (`decide_fast`), portando il tempo di calcolo a circa **0,8 - 1,1 secondi** su GPU consumer per pacchetti multi-domanda.
+4. **Finestra di Contesto Dinamica & Hierarchical Evidence Fusion**:
+   Supporta documenti di qualsiasi lunghezza. Su input standard (come Snake e contesti fino a ~2.000 token) esegue il calcolo diretto in memoria video a latenza minima; su testi complessi ed ultra-lunghi (contratti, bilanci, log estesi) attiva la segmentazione a finestre sovrapposte con fusione dei logit basata su margine di confidenza $\Delta p$, azzerando il rischio di Out-Of-Memory (OOM) ed evitando qualsiasi dispersione di potenza.
 
 ---
 
