@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="360" viewBox="0 0 900 360" role="img" aria-label="Spark-Decide: decisioni tipizzate in un solo forward pass">
+<title>Spark-Decide: decisioni tipizzate in un solo forward pass</title>
+<style>
+  .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+  .t1{fill:#eaf6ef} .t2{fill:#a3b8ad} .t3{fill:#6f8479} .g{fill:#2ee88a}
+  .b{font-weight:700} .sb{font-weight:600}
+  .cap{letter-spacing:.12em;font-size:11px;font-weight:700}
+
+  .grow{transform-box:fill-box;transform-origin:left center;animation:grow 1.2s cubic-bezier(.2,.8,.2,1)}
+  @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  .pulse{animation:pulse 1.8s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){.grow,.pulse{animation:none}}
+</style>
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0d1411"/><stop offset="1" stop-color="#0a0f0d"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#16211c"/>
+  </pattern>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<rect x="0.5" y="0.5" width="899" height="359" rx="18" fill="url(#bgGrad)" stroke="#1f2d26"/>
+<rect x="0.5" y="0.5" width="899" height="359" rx="18" fill="url(#dots)" opacity=".7"/>
+
+<ellipse cx="120" cy="120" rx="150" ry="120" fill="#2ee88a" opacity=".10" filter="url(#softglow)"/>
+<ellipse cx="760" cy="300" rx="180" ry="90" fill="#2ee88a" opacity=".05" filter="url(#softglow)"/>
+<clipPath id="logoClip"><rect x="40" y="40" width="112" height="112" rx="22"/></clipPath>
+<image x="40" y="40" width="112" height="112" clip-path="url(#logoClip)" href="data:image/jpeg;base64,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"/>
+<rect x="40" y="40" width="112" height="112" rx="22" fill="none" stroke="#2ee88a" stroke-opacity=".45"/>
+
+<text x="176" y="92" class="s b t1" font-size="44">Spark<tspan class="g">-</tspan>Decide</text>
+<text x="178" y="124" class="s t2" font-size="17">Decisioni tipizzate in un solo forward pass</text>
+<g transform="translate(178,138)">
+  <rect width="150" height="22" rx="11" fill="#12201a" stroke="#1c7c54"/>
+  <text x="75" y="15" class="m g" font-size="11" text-anchor="middle">built on Rizzo Flow 4B</text>
+</g>
+
+<text x="40" y="200" class="s t1" font-size="15">Dai uno <tspan class="m g">STATE</tspan> (testo o JSON) e N domande:</text>
+<text x="40" y="222" class="s t2" font-size="15">ottieni per ognuna risposta, confidenza e probabilità</text>
+<text x="40" y="244" class="s t2" font-size="15">calibrate. Nessun token generato: legge i logit.</text>
+
+<g transform="translate(40,272)">
+  <rect width="86" height="30" rx="8" fill="#121c17" stroke="#1f2d26"/><text x="43" y="20" class="m t1" font-size="13" text-anchor="middle">choice</text>
+  <rect x="96" width="92" height="30" rx="8" fill="#121c17" stroke="#1f2d26"/><text x="142" y="20" class="m t1" font-size="13" text-anchor="middle">boolean</text>
+  <rect x="198" width="74" height="30" rx="8" fill="#121c17" stroke="#1f2d26"/><text x="235" y="20" class="m t1" font-size="13" text-anchor="middle">score</text>
+  <text x="290" y="20" class="s g b" font-size="16">→</text>
+  <text x="314" y="20" class="m t2" font-size="12">risposta + probabilità</text>
+</g>
+
+<rect x="588" y="40" width="278" height="268" rx="14" fill="#0b120f" stroke="#1f2d26"/>
+<circle cx="608" cy="62" r="4" fill="#2ee88a" class="pulse"/>
+<text x="620" y="66" class="s cap t3">ESEMPIO · SNAKE 10×10</text>
+<text x="606" y="94" class="m t2" font-size="12">detailed_traces.json · passo 1</text>
+<text x="606" y="118" class="m t1 sb" font-size="13">move <tspan class="t3">· choice</tspan></text>
+
+  <text x="606" y="143" class="m g b" font-size="12">right</text>
+  <rect x="654" y="133" width="150" height="12" rx="6" fill="#121c17"/>
+  <rect class="grow" x="654" y="133" width="149.3" height="12" rx="6" fill="#2ee88a" filter="url(#glow)"/>
+  <text x="848" y="143" class="m t1 b" font-size="12" text-anchor="end">99,5%</text>
+  <text x="606" y="173" class="m t2" font-size="12">left</text>
+  <rect x="654" y="163" width="150" height="12" rx="6" fill="#121c17"/>
+  <rect class="grow" x="654" y="163" width="3.0" height="12" rx="6" fill="#33453c"/>
+  <text x="848" y="173" class="m t3" font-size="12" text-anchor="end">0,2%</text>
+  <text x="606" y="203" class="m t2" font-size="12">down</text>
+  <rect x="654" y="193" width="150" height="12" rx="6" fill="#121c17"/>
+  <rect class="grow" x="654" y="193" width="3.0" height="12" rx="6" fill="#33453c"/>
+  <text x="848" y="203" class="m t3" font-size="12" text-anchor="end">0,1%</text>
+  <text x="606" y="233" class="m t2" font-size="12">up</text>
+  <rect x="654" y="223" width="150" height="12" rx="6" fill="#121c17"/>
+  <rect class="grow" x="654" y="223" width="3.0" height="12" rx="6" fill="#33453c"/>
+  <text x="848" y="233" class="m t3" font-size="12" text-anchor="end">0,1%</text>
+<line x1="606" y1="266" x2="848" y2="266" stroke="#1b2721"/>
+<text x="606" y="294" class="m t1 sb" font-size="12">danger <tspan class="t3">· boolean</tspan></text>
+<text x="848" y="294" class="m t2" font-size="12" text-anchor="end">false · p=0,04</text>
+
+</svg>

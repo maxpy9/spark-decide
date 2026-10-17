@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="470" viewBox="0 0 900 470" role="img" aria-label="Snake: cause di fine partita per configurazione">
+<title>Snake: cause di fine partita per configurazione</title>
+<style>
+  .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+  .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+  .t1{fill:#eaf6ef} .t2{fill:#a3b8ad} .t3{fill:#6f8479} .g{fill:#2ee88a}
+  .b{font-weight:700} .sb{font-weight:600}
+  .cap{letter-spacing:.12em;font-size:11px;font-weight:700}
+</style>
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0d1411"/><stop offset="1" stop-color="#0a0f0d"/>
+  </linearGradient>
+  <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="1" fill="#16211c"/>
+  </pattern>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="14"/>
+  </filter>
+</defs>
+<rect x="0.5" y="0.5" width="899" height="469" rx="18" fill="url(#bgGrad)" stroke="#1f2d26"/>
+<rect x="0.5" y="0.5" width="899" height="469" rx="18" fill="url(#dots)" opacity=".7"/>
+
+<text x="20" y="36" class="s b t1" font-size="17">Come muore il serpente</text>
+<text x="20" y="56" class="s t3" font-size="12">% delle 20 partite per causa di fine partita</text><rect x="20" y="76" width="12" height="12" rx="3" fill="#3987e5"/><text x="38" y="86" class="s t2" font-size="12">Inversione 180°</text><rect x="151.0" y="76" width="12" height="12" rx="3" fill="#d95926"/><text x="169.0" y="86" class="s t2" font-size="12">Muro</text><rect x="209.4" y="76" width="12" height="12" rx="3" fill="#199e70"/><text x="227.4" y="86" class="s t2" font-size="12">Corpo</text><rect x="274.4" y="76" width="12" height="12" rx="3" fill="#c98500"/><text x="292.4" y="86" class="s t2" font-size="12">Fame (40 passi senza cibo)</text><text x="20" y="132" class="s t2" font-size="12.5">Sensori + griglia <tspan class="t3 m" font-size="11">GR OFF</tspan></text><rect x="271.0" y="118" width="448.0" height="20" rx="4" fill="#3987e5"/><text x="495.0" y="132" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">75%</text><rect x="721.0" y="118" width="88.0" height="20" rx="4" fill="#d95926"/><text x="765.0" y="132" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">15%</text><rect x="811.0" y="118" width="58.0" height="20" rx="4" fill="#199e70"/><text x="840.0" y="132" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">10%</text><text x="20" y="168" class="s t1" font-size="12.5">Sensori + griglia <tspan class="g m" font-size="11">GR ON</tspan></text><rect x="271.0" y="154" width="208.0" height="20" rx="4" fill="#199e70"/><text x="375.0" y="168" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">35%</text><rect x="481.0" y="154" width="388.0" height="20" rx="4" fill="#c98500"/><text x="675.0" y="168" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">65%</text><text x="20" y="204" class="s t2" font-size="12.5">Solo sensori <tspan class="t3 m" font-size="11">GR OFF</tspan></text><rect x="271.0" y="190" width="508.0" height="20" rx="4" fill="#3987e5"/><text x="525.0" y="204" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">85%</text><rect x="781.0" y="190" width="58.0" height="20" rx="4" fill="#d95926"/><text x="810.0" y="204" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">10%</text><rect x="841.0" y="190" width="28.0" height="20" rx="4" fill="#199e70"/><text x="20" y="240" class="s t1" font-size="12.5">Solo sensori <tspan class="g m" font-size="11">GR ON</tspan></text><rect x="271.0" y="226" width="238.0" height="20" rx="4" fill="#199e70"/><text x="390.0" y="240" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">40%</text><rect x="511.0" y="226" width="358.0" height="20" rx="4" fill="#c98500"/><text x="690.0" y="240" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">60%</text><text x="20" y="276" class="s t2" font-size="12.5">Solo griglia ASCII <tspan class="t3 m" font-size="11">GR OFF</tspan></text><rect x="271.0" y="262" width="448.0" height="20" rx="4" fill="#3987e5"/><text x="495.0" y="276" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">75%</text><rect x="721.0" y="262" width="148.0" height="20" rx="4" fill="#d95926"/><text x="795.0" y="276" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">25%</text><text x="20" y="312" class="s t1" font-size="12.5">Solo griglia ASCII <tspan class="g m" font-size="11">GR ON</tspan></text><rect x="271.0" y="298" width="148.0" height="20" rx="4" fill="#199e70"/><text x="345.0" y="312" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">25%</text><rect x="421.0" y="298" width="448.0" height="20" rx="4" fill="#c98500"/><text x="645.0" y="312" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">75%</text><text x="20" y="360" class="s t1" font-size="12.5">Greedy (regole)</text><rect x="271.0" y="346" width="178.0" height="20" rx="4" fill="#d95926"/><text x="360.0" y="360" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">30%</text><rect x="451.0" y="346" width="418.0" height="20" rx="4" fill="#199e70"/><text x="660.0" y="360" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">70%</text><text x="20" y="396" class="s t1" font-size="12.5">Casuale-sicuro (regole)</text><rect x="271.0" y="382" width="58.0" height="20" rx="4" fill="#d95926"/><text x="300.0" y="396" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">10%</text><rect x="331.0" y="382" width="28.0" height="20" rx="4" fill="#199e70"/><rect x="361.0" y="382" width="508.0" height="20" rx="4" fill="#c98500"/><text x="615.0" y="396" class="m b" font-size="11" fill="#0b120f" text-anchor="middle">85%</text><line x1="20" y1="335" x2="880" y2="335" stroke="#1b2721"/>
+<text x="20" y="432" class="s t2" font-size="12">Senza Guard-Rail il 75–85% delle partite finisce con un'inversione a 180°. Con il Guard-Rail muro e inversioni spariscono:</text>
+<text x="20" y="450" class="s t2" font-size="12">restano collisioni col corpo e partite chiuse per fame.</text>
+</svg>
