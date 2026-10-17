@@ -1009,6 +1009,7 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     <span><strong>URL Server / Tunnel Cloudflare:</strong></span>
     <input type="text" id="custom-server-url" placeholder="es. http://127.0.0.1:7860 oppure https://xxx.trycloudflare.com" style="flex:1;min-width:240px;max-width:480px;padding:6px 10px;border-radius:6px;border:1px solid #555;background:#151515;color:#3ecf8e;font-family:var(--font-mono);font-size:12px;"/>
     <button class="btn btn-sm btn-primary" onclick="saveAndTestServerUrl()">Test & Salva</button>
+    <button class="btn btn-sm" onclick="resetToLocalhost()" style="background:#333;color:#3ecf8e;border:1px solid #444;" title="Reimposta la connessione a 127.0.0.1:7860">Ripristina Localhost</button>
     <button class="btn btn-sm" onclick="toggleServerBar()">Chiudi</button>
     <span id="server-test-feedback" style="font-size:12px;font-weight:600;"></span>
   </div>
@@ -1610,16 +1611,32 @@ function loadPreset(key) {
 // GESTIONE CONNESSIONE AL VERO SERVER SPARK-DECIDE (Nessuna simulazione finta!)
 // ============================================================================
 function getServerUrl() {
-  let u = (localStorage.getItem('spark_server_url') || '').trim();
-  if (u) return u.replace(/\/+$/, '');
   if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+    let u = (localStorage.getItem('spark_server_url') || '').trim();
+    if (u && !u.includes('trycloudflare.com') && !u.includes('ngrok') && !u.includes('127.0.0.1:7860') && !u.includes('localhost:7860')) {
+      return u.replace(/\/+$/, '');
+    }
     return '';
   }
+  let u = (localStorage.getItem('spark_server_url') || '').trim();
+  if (u) return u.replace(/\/+$/, '');
   return (window.__DEFAULT_TUNNEL_URL || '').replace(/\/+$/, '');
 }
 
 function setServerUrl(u) {
   localStorage.setItem('spark_server_url', (u || '').trim().replace(/\/+$/, ''));
+}
+
+function resetToLocalhost() {
+  localStorage.removeItem('spark_server_url');
+  const inp = document.getElementById('custom-server-url');
+  if (inp) inp.value = '';
+  const fb = document.getElementById('server-test-feedback');
+  if (fb) {
+    fb.style.color = '#3ecf8e';
+    fb.innerText = '✅ Ripristinato localhost locale (127.0.0.1:7860)!';
+  }
+  checkServerConnection(false);
 }
 
 function toggleServerBar() {
@@ -1663,6 +1680,12 @@ async function checkServerConnection(silent = true) {
     const info = await resp.json();
     if (dot) dot.style.background = '#3ecf8e';
     if (txt) txt.innerText = info.badge || 'Spark-Decide · GPU Online';
+    const statusTitle = document.getElementById('sn-status-title');
+    if (statusTitle && statusTitle.innerText === 'Server non raggiungibile') {
+      statusTitle.innerText = 'Pronto a partire';
+      const statusSub = document.getElementById('sn-status-sub');
+      if (statusSub) statusSub.innerText = 'premi Avvia o 1 mossa';
+    }
     return true;
   } catch (err) {
     if (dot) dot.style.background = '#ef4444';
@@ -2142,9 +2165,34 @@ window.addEventListener('DOMContentLoaded', async () => {
 """
 
 
+@app.get("/tunnel_url.json")
+def get_tunnel_url():
+    spark_root = os.environ.get("SPARK_ROOT_DIR", os.path.dirname(os.path.abspath(__file__)))
+    tunnel_file = os.path.join(spark_root, "tunnel_url.txt")
+    if os.path.exists(tunnel_file):
+        try:
+            with open(tunnel_file, "r", encoding="utf-8") as f:
+                u = f.read().strip()
+                if u.startswith("http"):
+                    return {"url": u}
+        except Exception:
+            pass
+    return {"url": ""}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return STUDIO_HTML
+    spark_root = os.environ.get("SPARK_ROOT_DIR", os.path.dirname(os.path.abspath(__file__)))
+    tunnel_file = os.path.join(spark_root, "tunnel_url.txt")
+    t_url = ""
+    if os.path.exists(tunnel_file):
+        try:
+            with open(tunnel_file, "r", encoding="utf-8") as f:
+                t_url = f.read().strip()
+        except Exception:
+            pass
+    html = STUDIO_HTML.replace('window.__DEFAULT_TUNNEL_URL || \'\'', f"'{t_url}'" if t_url else "''")
+    return html
 
 
 def launch_server(host: str = "0.0.0.0", port: int = 7860, open_browser: bool = True):
